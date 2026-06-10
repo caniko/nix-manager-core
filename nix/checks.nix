@@ -21,6 +21,7 @@
       inherit cargoArtifacts;
       partitions = 1;
       partitionType = "count";
+      cargoNextestExtraArgs = "--no-tests pass";
     }
   );
 }
