@@ -1,6 +1,6 @@
 [package]
 name = "nix-manager-core"
-description = "Support library for manager-flake Rust projects: ui, exec, repo, age, forge, health, parallel"
+description = "Support library for manager-flake Rust projects: ui, exec, repo, age, forge, health, parallel, build, user"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,6 +19,7 @@ hostname.workspace = true
 indicatif.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+walkdir.workspace = true
 forgejo-api.workspace = true
 url.workspace = true
 

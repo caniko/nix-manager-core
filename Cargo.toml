@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/nix-manager-core"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 repository = "https://codeberg.org/caniko/nix-manager-core"
@@ -20,6 +20,7 @@ serde_json = "1"
 tempfile = "3"
 forgejo-api = { version = "0.10", default-features = false, features = ["sync", "rustls-tls"] }
 url = "2"
+walkdir = "2"
 
 [workspace.metadata.crane]
 name = "nix-manager-core"
