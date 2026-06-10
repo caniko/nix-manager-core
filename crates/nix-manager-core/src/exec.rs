@@ -6,6 +6,9 @@
 //! - [`cap`] / [`cap_with_env`] — capture exit code, stdout, AND stderr without
 //!   ever erroring at the Rust level. Useful for probes where non-zero is just
 //!   data (e.g. health checks).
+//!
+//! Plus a few small utilities ([`is_local_host`], [`local_hostname`],
+//! [`tail_lines`]) that span multiple unrelated callers.
 
 use anyhow::{anyhow, Result};
 use std::ffi::OsStr;
@@ -259,4 +262,38 @@ pub fn tail_lines(s: &str, n: usize) -> Vec<&str> {
     let v: Vec<&str> = s.lines().collect();
     let start = v.len().saturating_sub(n);
     v[start..].to_vec()
+}
+
+/// `nix build --no-link --print-out-paths <attr>` and return the first
+/// produced store path.
+pub fn nix_build_path(attr: &str) -> Result<String> {
+    let raw = capture("nix", ["build", "--no-link", "--print-out-paths", attr])?;
+    raw.lines()
+        .next()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("nix build produced no output path"))
+}
+
+/// Check whether `sudo` can authenticate non-interactively for the current
+/// user. This intentionally uses `sudo -n -v`: callers that cannot allocate a
+/// tty must fail before constructing a command whose stdout might be empty.
+pub fn sudo_noninteractive_ok() -> Captured {
+    cap("sudo", ["-n", "-v"])
+}
+
+/// `hostname` of the current machine. Errors with a clear diagnostic when the
+/// syscall fails or when the bytes don't decode as UTF-8. Callers that prefer
+/// an empty string on failure can chain `.unwrap_or_default()`.
+pub fn local_hostname() -> Result<String> {
+    hostname::get()
+        .map_err(|e| anyhow!("hostname: {e}"))?
+        .into_string()
+        .map_err(|os| anyhow!("hostname is not valid UTF-8: {os:?}"))
+}
+
+/// True when `host` refers to the machine this process runs on. Treats
+/// `localhost` / `127.0.0.1` / `::1` as local without a hostname syscall.
+pub fn is_local_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+        || local_hostname().map(|h| h == host).unwrap_or(false)
 }
