@@ -1,6 +1,6 @@
-use console::{Term, style};
-use dialoguer::Input;
+use console::{style, Term};
 use dialoguer::theme::ColorfulTheme;
+use dialoguer::Input;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 

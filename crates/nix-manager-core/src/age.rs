@@ -6,7 +6,7 @@
 //! A single trailing newline is stripped — agenix payloads are newline-terminated
 //! but most consumers (e.g. Actions secrets) want the bare value.
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 

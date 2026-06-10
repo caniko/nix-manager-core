@@ -4,7 +4,7 @@
 //! (defaults to `flake.nix`) so commands can operate from any subdirectory
 //! without hard-coding paths.
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::env;
 use std::path::PathBuf;
 

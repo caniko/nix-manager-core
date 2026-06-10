@@ -6,7 +6,7 @@
 //!   token file at `~/.local/share/forgejo-cli/<host>/TOKEN`.
 //! - **GitHub**: delegates to the `gh` CLI.
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -69,7 +69,9 @@ pub fn codeberg_bearer_token(host: &str) -> Result<String> {
 
 /// Push a secret to a Codeberg/Forgejo repository via its API.
 pub fn push_codeberg_secret(host: &str, repo: &str, name: &str, value: &str) -> Result<()> {
-    ui::step(format!("codeberg/{host}: setting `{name}` secret on {repo}"));
+    ui::step(format!(
+        "codeberg/{host}: setting `{name}` secret on {repo}"
+    ));
     let bearer = codeberg_bearer_token(host)?;
     let url = format!("https://{host}/api/v1/repos/{repo}/actions/secrets/{name}");
     let resp = ureq::put(&url)

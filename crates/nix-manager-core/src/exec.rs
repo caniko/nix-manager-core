@@ -7,7 +7,7 @@
 //!   ever erroring at the Rust level. Useful for probes where non-zero is just
 //!   data (e.g. health checks).
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::{Command, Stdio};

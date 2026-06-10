@@ -13,13 +13,13 @@ Manager-flake projects follow a two-repo pattern:
 
 ## Rust modules (`crates/nix-manager-core`)
 
-| Module | Purpose |
-|--------|---------|
-| [`ui`] | Terminal output helpers (headers, steps, spinners, confirm typed) |
-| [`exec`] | Shell execution (`run`, `capture`, `cap`, `replace`, `run_with_spinner`) |
-| [`repo`] | Repository root discovery (walk up for a marker file) |
-| [`age`] | age/rage decryption with identity fallback |
-| [`forge`] | Push Actions secrets to Codeberg/Forgejo and GitHub |
+| Module    | Purpose                                                                  |
+| --------- | ------------------------------------------------------------------------ |
+| [`ui`]    | Terminal output helpers (headers, steps, spinners, confirm typed)        |
+| [`exec`]  | Shell execution (`run`, `capture`, `cap`, `replace`, `run_with_spinner`) |
+| [`repo`]  | Repository root discovery (walk up for a marker file)                    |
+| [`age`]   | age/rage decryption with identity fallback                               |
+| [`forge`] | Push Actions secrets to Codeberg/Forgejo and GitHub                      |
 
 ## Nix scaffold (`nix/scaffold.nix`)
 
@@ -41,7 +41,7 @@ outputs for a crane-based Rust project:
 
 Returns `{ packages, checks, devShells, formatter }` for the standard
 systems (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`,
-`aarch64-darwin`).  Use `extraOutputs` to merge domain-specific
+`aarch64-darwin`). Use `extraOutputs` to merge domain-specific
 outputs (e.g. `nixosModules`, `apps`, `lib.*` helpers).
 
 The `extraOutputs` function receives `{ lib, forAllSystems, pkgsFor, cargoFor }`

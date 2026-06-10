@@ -10,7 +10,8 @@
 #     nmc.lib.mkManagerOutputs {
 #       inherit self nixpkgs rs-harbor rust-overlay treefmt-nix git-hooks;
 #       crateName = "my-manager";
-#       extraOutputs = { lib, forAllSystems, pkgsFor, cargoFor }: {
+#       extraDevShellPackages = pkgs: [ pkgs.bind ];
+#       extraOutputs = { self, lib, forAllSystems, pkgsFor, cargoFor }: {
 #         nixosModules.default = import ./module.nix;
 #       };
 #     }
@@ -22,7 +23,14 @@
   treefmt-nix,
   git-hooks,
   crateName,
-  extraOutputs ? {...}: {},
+  extraOutputs ? {
+    self,
+    lib,
+    forAllSystems,
+    pkgsFor,
+    cargoFor,
+  }: {},
+  extraDevShellPackages ? (pkgs: []),
 } @ args: let
   inherit (nixpkgs) lib;
 
@@ -68,7 +76,8 @@
         treefmtEval = treefmt-nix.lib.evalModule pkgs treefmtConfig;
       in
         (checksConfig {
-          inherit (cargo)
+          inherit
+            (cargo)
             craneLib
             commonArgs
             cargoArtifacts
@@ -102,6 +111,7 @@
               pre-commit
               rust-analyzer
             ]
+            ++ extraDevShellPackages pkgs
             ++ pre-commit-check.enabledPackages;
           shellHook = pre-commit-check.shellHook;
         };
@@ -114,7 +124,20 @@
   };
 
   extras = extraOutputs {
-    inherit lib forAllSystems pkgsFor cargoFor;
+    inherit self lib forAllSystems pkgsFor cargoFor;
   };
+
+  mergeSystems = name:
+    forAllSystems (
+      system:
+        (base.${name}.${system} or {}) // (extras.${name}.${system} or {})
+    );
+
+  systemAttrs = ["packages" "checks" "devShells" "formatter"];
 in
-  base // extras
+  (builtins.removeAttrs (base // extras) systemAttrs)
+  // (builtins.listToAttrs (map (name: {
+      inherit name;
+      value = mergeSystems name;
+    })
+    systemAttrs))
