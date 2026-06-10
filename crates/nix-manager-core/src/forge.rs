@@ -73,22 +73,36 @@ pub fn push_codeberg_secret(host: &str, repo: &str, name: &str, value: &str) -> 
         "codeberg/{host}: setting `{name}` secret on {repo}"
     ));
     let bearer = codeberg_bearer_token(host)?;
-    let url = format!("https://{host}/api/v1/repos/{repo}/actions/secrets/{name}");
-    let resp = ureq::put(&url)
-        .header("Authorization", format!("token {bearer}"))
-        .send_json(serde_json::json!({ "data": value }))
-        .map_err(|e| anyhow!("PUT {url}: {e}"))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .into_body()
-            .read_to_string()
-            .unwrap_or_else(|_| "<unreadable body>".to_string());
-        return Err(anyhow!(
-            "PUT {url} -> {status}: {body}\n\
+
+    let (owner, repo_name) = repo
+        .split_once('/')
+        .ok_or_else(|| anyhow!("invalid repo format `{repo}`: expected `owner/repo`"))?;
+
+    let base_url = url::Url::parse(&format!("https://{host}"))
+        .map_err(|e| anyhow!("invalid host `{host}`: {e}"))?;
+
+    let api = forgejo_api::sync::Forgejo::new(
+        forgejo_api::Auth::Token(&bearer),
+        base_url,
+    )
+    .map_err(|e| anyhow!("failed to create forgejo client for {host}: {e}"))?;
+
+    api.update_repo_secret(
+        owner,
+        repo_name,
+        name,
+        forgejo_api::structs::CreateOrUpdateSecretOption {
+            data: value.to_string(),
+        },
+    )
+    .send()
+    .map_err(|e| {
+        anyhow!(
+            "failed to set secret `{name}` on {host}/{repo}: {e}\n\
              check that the stored token has `write:repository` scope on {repo}"
-        ));
-    }
+        )
+    })?;
+
     Ok(())
 }
 
