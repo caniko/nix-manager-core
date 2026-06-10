@@ -33,6 +33,9 @@
     cargoFor,
   }: {},
   extraDevShellPackages ? (pkgs: []),
+  # Rust edition rustfmt formats against; match the consumer workspace's
+  # `workspace.package.edition`.
+  rustEdition ? "2021",
 } @ args: let
   inherit (nixpkgs) lib;
 
@@ -57,7 +60,7 @@
       inherit rs-harbor crateName srcDir;
     };
 
-  treefmtConfig = ./treefmt.nix;
+  treefmtConfig = import ./treefmt.nix {inherit rustEdition;};
   preCommitConfig = import ./pre-commit.nix;
   checksConfig = import ./checks.nix;
 

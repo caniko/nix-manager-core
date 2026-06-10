@@ -1,9 +1,9 @@
-{pkgs, ...}: {
+{rustEdition ? "2021"}: {pkgs, ...}: {
   projectRootFile = "flake.nix";
 
   programs.rustfmt = {
     enable = true;
-    edition = "2021";
+    edition = rustEdition;
     package = pkgs.rust-bin.nightly.latest.default.override {
       extensions = ["rustfmt"];
     };
