@@ -1,0 +1,120 @@
+# Reusable flake-output builder for manager-style Rust projects.
+#
+# Usage from a downstream flake's `nix/default.nix`:
+#
+#   { self, nixpkgs, rs-harbor, rust-overlay, treefmt-nix, git-hooks, ... }:
+#   let
+#     inherit (builtins) getFlake;
+#     nmc = getFlake "git+https://codeberg.org/caniko/nix-manager-core";
+#   in
+#     nmc.lib.mkManagerOutputs {
+#       inherit self nixpkgs rs-harbor rust-overlay treefmt-nix git-hooks;
+#       crateName = "my-manager";
+#       extraOutputs = { lib, forAllSystems, pkgsFor, cargoFor }: {
+#         nixosModules.default = import ./module.nix;
+#       };
+#     }
+{
+  self,
+  nixpkgs,
+  rs-harbor,
+  rust-overlay,
+  treefmt-nix,
+  git-hooks,
+  crateName,
+  extraOutputs ? {...}: {},
+} @ args: let
+  inherit (nixpkgs) lib;
+
+  systems = [
+    "x86_64-linux"
+    "aarch64-linux"
+    "x86_64-darwin"
+    "aarch64-darwin"
+  ];
+
+  forAllSystems = f: lib.genAttrs systems f;
+
+  pkgsFor = system:
+    import nixpkgs {
+      inherit system;
+      overlays = [(import rust-overlay)];
+    };
+
+  cargoFor = system:
+    import ./package.nix {
+      pkgs = pkgsFor system;
+      inherit rs-harbor crateName;
+    };
+
+  treefmtConfig = ./treefmt.nix;
+  preCommitConfig = import ./pre-commit.nix;
+  checksConfig = import ./checks.nix;
+
+  base = {
+    packages = forAllSystems (
+      system: let
+        cargo = cargoFor system;
+      in {
+        default = cargo.package;
+        "${crateName}" = cargo.package;
+      }
+    );
+
+    checks = forAllSystems (
+      system: let
+        pkgs = pkgsFor system;
+        cargo = cargoFor system;
+        treefmtEval = treefmt-nix.lib.evalModule pkgs treefmtConfig;
+      in
+        (checksConfig {
+          inherit (cargo)
+            craneLib
+            commonArgs
+            cargoArtifacts
+            src
+            ;
+        })
+        // {
+          formatting = treefmtEval.config.build.check self;
+        }
+    );
+
+    devShells = forAllSystems (
+      system: let
+        pkgs = pkgsFor system;
+        cargo = cargoFor system;
+        treefmtEval = treefmt-nix.lib.evalModule pkgs treefmtConfig;
+        pre-commit-check = git-hooks.lib.${system}.run {
+          src = ../.;
+          install.enable = false;
+          hooks = preCommitConfig {
+            inherit pkgs;
+            treefmtWrapper = treefmtEval.config.build.wrapper;
+          };
+        };
+      in {
+        default = cargo.craneLib.devShell {
+          checks = self.checks.${system};
+          packages = with pkgs;
+            [
+              cargo-nextest
+              pre-commit
+              rust-analyzer
+            ]
+            ++ pre-commit-check.enabledPackages;
+          shellHook = pre-commit-check.shellHook;
+        };
+      }
+    );
+
+    formatter = forAllSystems (
+      system: (treefmt-nix.lib.evalModule (pkgsFor system) treefmtConfig).config.build.wrapper
+    );
+  };
+
+  extras = extraOutputs {
+    inherit lib forAllSystems pkgsFor cargoFor;
+  };
+in
+  base // extras
