@@ -3,11 +3,12 @@
   pkgs,
   rs-harbor,
   crateName,
+  srcDir ? ../.,
 }: let
   toolchain = rs-harbor.lib.mkToolchain {inherit pkgs;};
   inherit (toolchain) craneLib;
 
-  src = craneLib.cleanCargoSource ../.;
+  src = craneLib.cleanCargoSource srcDir;
 
   commonArgs = {
     inherit src;

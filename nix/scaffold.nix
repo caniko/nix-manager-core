@@ -10,6 +10,7 @@
 #     nmc.lib.mkManagerOutputs {
 #       inherit self nixpkgs rs-harbor rust-overlay treefmt-nix git-hooks;
 #       crateName = "my-manager";
+#       srcDir = ../.;
 #       extraDevShellPackages = pkgs: [ pkgs.bind ];
 #       extraOutputs = { self, lib, forAllSystems, pkgsFor, cargoFor }: {
 #         nixosModules.default = import ./module.nix;
@@ -23,6 +24,7 @@
   treefmt-nix,
   git-hooks,
   crateName,
+  srcDir ? ../.,
   extraOutputs ? {
     self,
     lib,
@@ -52,7 +54,7 @@
   cargoFor = system:
     import ./package.nix {
       pkgs = pkgsFor system;
-      inherit rs-harbor crateName;
+      inherit rs-harbor crateName srcDir;
     };
 
   treefmtConfig = ./treefmt.nix;
@@ -95,7 +97,7 @@
         cargo = cargoFor system;
         treefmtEval = treefmt-nix.lib.evalModule pkgs treefmtConfig;
         pre-commit-check = git-hooks.lib.${system}.run {
-          src = ../.;
+          src = srcDir;
           install.enable = false;
           hooks = preCommitConfig {
             inherit pkgs;
