@@ -67,6 +67,26 @@ pub fn codeberg_bearer_token(host: &str) -> Result<String> {
         })
 }
 
+fn parse_repo(repo: &str) -> Result<(&str, &str)> {
+    let (owner, repo_name) = repo
+        .split_once('/')
+        .ok_or_else(|| anyhow!("invalid repo format `{repo}`: expected `owner/repo`"))?;
+    if owner.is_empty() || repo_name.is_empty() || repo_name.contains('/') {
+        return Err(anyhow!(
+            "invalid repo format `{repo}`: expected `owner/repo`"
+        ));
+    }
+    Ok((owner, repo_name))
+}
+
+fn codeberg_client(host: &str, bearer: &str) -> Result<forgejo_api::sync::Forgejo> {
+    let base_url = url::Url::parse(&format!("https://{host}"))
+        .map_err(|e| anyhow!("invalid host `{host}`: {e}"))?;
+
+    forgejo_api::sync::Forgejo::new(forgejo_api::Auth::Token(bearer), base_url)
+        .map_err(|e| anyhow!("failed to create forgejo client for {host}: {e}"))
+}
+
 /// Push a secret to a Codeberg/Forgejo repository via its API.
 pub fn push_codeberg_secret(host: &str, repo: &str, name: &str, value: &str) -> Result<()> {
     ui::step(format!(
@@ -74,18 +94,8 @@ pub fn push_codeberg_secret(host: &str, repo: &str, name: &str, value: &str) -> 
     ));
     let bearer = codeberg_bearer_token(host)?;
 
-    let (owner, repo_name) = repo
-        .split_once('/')
-        .ok_or_else(|| anyhow!("invalid repo format `{repo}`: expected `owner/repo`"))?;
-
-    let base_url = url::Url::parse(&format!("https://{host}"))
-        .map_err(|e| anyhow!("invalid host `{host}`: {e}"))?;
-
-    let api = forgejo_api::sync::Forgejo::new(
-        forgejo_api::Auth::Token(&bearer),
-        base_url,
-    )
-    .map_err(|e| anyhow!("failed to create forgejo client for {host}: {e}"))?;
+    let (owner, repo_name) = parse_repo(repo)?;
+    let api = codeberg_client(host, &bearer)?;
 
     api.update_repo_secret(
         owner,
@@ -104,6 +114,64 @@ pub fn push_codeberg_secret(host: &str, repo: &str, name: &str, value: &str) -> 
     })?;
 
     Ok(())
+}
+
+/// Push a non-secret variable to a Codeberg/Forgejo repository via its API.
+pub fn push_codeberg_variable(host: &str, repo: &str, name: &str, value: &str) -> Result<()> {
+    ui::step(format!(
+        "codeberg/{host}: setting `{name}` variable on {repo}"
+    ));
+    let bearer = codeberg_bearer_token(host)?;
+
+    let (owner, repo_name) = parse_repo(repo)?;
+    let api = codeberg_client(host, &bearer)?;
+
+    let update = api
+        .update_repo_variable(
+            owner,
+            repo_name,
+            name,
+            forgejo_api::structs::UpdateVariableOption {
+                name: None,
+                value: value.to_string(),
+            },
+        )
+        .send();
+
+    if let Err(err) = update {
+        if !is_not_found(&err) {
+            return Err(anyhow!(
+                "failed to update variable `{name}` on {host}/{repo}: {err}\n\
+                 check that the stored token has `write:repository` scope on {repo}"
+            ));
+        }
+
+        api.create_repo_variable(
+            owner,
+            repo_name,
+            name,
+            forgejo_api::structs::CreateVariableOption {
+                value: value.to_string(),
+            },
+        )
+        .send()
+        .map_err(|e| {
+            anyhow!(
+                "failed to create variable `{name}` on {host}/{repo}: {e}\n\
+                 check that the stored token has `write:repository` scope on {repo}"
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn is_not_found(err: &forgejo_api::ForgejoError) -> bool {
+    matches!(
+        err,
+        forgejo_api::ForgejoError::ApiError(api)
+            if matches!(api.error_kind(), forgejo_api::ApiErrorKind::NotFound { .. })
+    )
 }
 
 /// Convenience wrapper around [`push_codeberg_secret`] targeting codeberg.org.
@@ -189,5 +257,28 @@ mod tests {
             let err = result.unwrap_err().to_string();
             assert!(err.contains("CODEBERG_TOKEN") || err.contains("forgejo-cli"));
         });
+    }
+
+    #[test]
+    fn parse_repo_accepts_owner_repo_only() {
+        assert_eq!(
+            parse_repo("caniko/rs-modde").unwrap(),
+            ("caniko", "rs-modde")
+        );
+        assert!(parse_repo("caniko").is_err());
+        assert!(parse_repo("caniko/").is_err());
+        assert!(parse_repo("/rs-modde").is_err());
+        assert!(parse_repo("caniko/rs-modde/extra").is_err());
+    }
+
+    #[test]
+    fn not_found_detection_matches_forgejo_api_kind() {
+        let err = forgejo_api::ForgejoError::ApiError(
+            forgejo_api::ApiErrorKind::NotFound { errors: None }.into(),
+        );
+        assert!(is_not_found(&err));
+
+        let err = forgejo_api::ForgejoError::ApiError(forgejo_api::ApiErrorKind::Forbidden.into());
+        assert!(!is_not_found(&err));
     }
 }
