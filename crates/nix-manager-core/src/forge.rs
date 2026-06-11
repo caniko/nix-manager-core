@@ -166,6 +166,157 @@ pub fn push_codeberg_variable(host: &str, repo: &str, name: &str, value: &str) -
     Ok(())
 }
 
+/// Push a secret to a Codeberg/Forgejo organization Actions store via its API.
+pub fn push_codeberg_organization_secret(
+    host: &str,
+    org: &str,
+    name: &str,
+    value: &str,
+) -> Result<()> {
+    ui::step(format!(
+        "codeberg/{host}: setting `{name}` organization secret on {org}"
+    ));
+    let bearer = codeberg_bearer_token(host)?;
+    let api = codeberg_client(host, &bearer)?;
+
+    api.update_org_secret(
+        org,
+        name,
+        forgejo_api::structs::CreateOrUpdateSecretOption {
+            data: value.to_string(),
+        },
+    )
+    .send()
+    .map_err(|e| {
+        anyhow!(
+            "failed to set organization secret `{name}` on {host}/{org}: {e}\n\
+             check that the stored token can manage organization Actions secrets for {org}"
+        )
+    })?;
+
+    Ok(())
+}
+
+/// Push a non-secret variable to a Codeberg/Forgejo organization via its API.
+pub fn push_codeberg_organization_variable(
+    host: &str,
+    org: &str,
+    name: &str,
+    value: &str,
+) -> Result<()> {
+    ui::step(format!(
+        "codeberg/{host}: setting `{name}` organization variable on {org}"
+    ));
+    let bearer = codeberg_bearer_token(host)?;
+    let api = codeberg_client(host, &bearer)?;
+
+    let update = api
+        .update_org_variable(
+            org,
+            name,
+            forgejo_api::structs::UpdateVariableOption {
+                name: None,
+                value: value.to_string(),
+            },
+        )
+        .send();
+
+    if let Err(err) = update {
+        if !is_not_found(&err) {
+            return Err(anyhow!(
+                "failed to update organization variable `{name}` on {host}/{org}: {err}\n\
+                 check that the stored token can manage organization Actions variables for {org}"
+            ));
+        }
+
+        api.create_org_variable(
+            org,
+            name,
+            forgejo_api::structs::CreateVariableOption {
+                value: value.to_string(),
+            },
+        )
+        .send()
+        .map_err(|e| {
+            anyhow!(
+                "failed to create organization variable `{name}` on {host}/{org}: {e}\n\
+                 check that the stored token can manage organization Actions variables for {org}"
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+/// Push a secret to the authenticated user's Codeberg/Forgejo Actions store via its API.
+pub fn push_codeberg_user_secret(host: &str, name: &str, value: &str) -> Result<()> {
+    ui::step(format!(
+        "codeberg/{host}: setting `{name}` user secret on authenticated user"
+    ));
+    let bearer = codeberg_bearer_token(host)?;
+    let api = codeberg_client(host, &bearer)?;
+
+    api.update_user_secret(
+        name,
+        forgejo_api::structs::CreateOrUpdateSecretOption {
+            data: value.to_string(),
+        },
+    )
+    .send()
+    .map_err(|e| {
+        anyhow!(
+            "failed to set user secret `{name}` on {host}: {e}\n\
+             check that the stored token can manage authenticated-user Actions secrets"
+        )
+    })?;
+
+    Ok(())
+}
+
+/// Push a non-secret variable to the authenticated user's Codeberg/Forgejo Actions store.
+pub fn push_codeberg_user_variable(host: &str, name: &str, value: &str) -> Result<()> {
+    ui::step(format!(
+        "codeberg/{host}: setting `{name}` user variable on authenticated user"
+    ));
+    let bearer = codeberg_bearer_token(host)?;
+    let api = codeberg_client(host, &bearer)?;
+
+    let update = api
+        .update_user_variable(
+            name,
+            forgejo_api::structs::UpdateVariableOption {
+                name: None,
+                value: value.to_string(),
+            },
+        )
+        .send();
+
+    if let Err(err) = update {
+        if !is_not_found(&err) {
+            return Err(anyhow!(
+                "failed to update user variable `{name}` on {host}: {err}\n\
+                 check that the stored token can manage authenticated-user Actions variables"
+            ));
+        }
+
+        api.create_user_variable(
+            name,
+            forgejo_api::structs::CreateVariableOption {
+                value: value.to_string(),
+            },
+        )
+        .send()
+        .map_err(|e| {
+            anyhow!(
+                "failed to create user variable `{name}` on {host}: {e}\n\
+                 check that the stored token can manage authenticated-user Actions variables"
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
 fn is_not_found(err: &forgejo_api::ForgejoError) -> bool {
     matches!(
         err,
