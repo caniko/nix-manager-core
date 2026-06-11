@@ -1,6 +1,6 @@
 [package]
 name = "nix-manager-core"
-description = "Support library for manager-flake Rust projects: ui, exec, repo, age, forge, health, parallel, build, user"
+description = "Support library for manager-flake Rust projects: ui, exec, repo, forge, health, parallel, build, user"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

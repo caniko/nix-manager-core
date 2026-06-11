@@ -114,6 +114,7 @@
             [
               cargo-nextest
               pre-commit
+              rage
               rust-analyzer
             ]
             ++ extraDevShellPackages pkgs
