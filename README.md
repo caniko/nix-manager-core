@@ -18,6 +18,7 @@ Manager-flake projects follow a two-repo pattern:
 | [`ui`]    | Terminal output helpers (headers, steps, spinners, confirm typed)        |
 | [`exec`]  | Shell execution (`run`, `capture`, `cap`, `replace`, `run_with_spinner`) |
 | [`repo`]  | Repository root discovery (walk up for a marker file)                    |
+| [`age`]   | age/rage decryption and shared identity resolution (flags → env → stubs) |
 | [`forge`] | Push Actions secrets to Codeberg/Forgejo and GitHub                      |
 
 ## Nix scaffold (`nix/scaffold.nix`)
