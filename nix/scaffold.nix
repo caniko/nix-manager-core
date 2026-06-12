@@ -33,6 +33,7 @@
     cargoFor,
   }: {},
   extraDevShellPackages ? (pkgs: []),
+  extraRuntimePackages ? (pkgs: []),
   # Rust edition rustfmt formats against; match the consumer workspace's
   # `workspace.package.edition`.
   rustEdition ? "2021",
@@ -57,7 +58,7 @@
   cargoFor = system:
     import ./package.nix {
       pkgs = pkgsFor system;
-      inherit rs-harbor crateName srcDir;
+      inherit rs-harbor crateName srcDir extraRuntimePackages;
     };
 
   treefmtConfig = import ./treefmt.nix {inherit rustEdition;};

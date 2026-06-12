@@ -4,11 +4,13 @@
   rs-harbor,
   crateName,
   srcDir ? ../.,
+  extraRuntimePackages ? pkgs: [],
 }: let
   toolchain = rs-harbor.lib.mkToolchain {inherit pkgs;};
   inherit (toolchain) craneLib;
 
   src = craneLib.cleanCargoSource srcDir;
+  runtimePackages = extraRuntimePackages pkgs;
 
   commonArgs = {
     inherit src;
@@ -24,6 +26,13 @@
     // {
       inherit cargoArtifacts;
       doCheck = false;
+      nativeBuildInputs = pkgs.lib.optionals (runtimePackages != []) [
+        pkgs.makeWrapper
+      ];
+      postInstall = pkgs.lib.optionalString (runtimePackages != []) ''
+        wrapProgram "$out/bin/${crateName}" \
+          --prefix PATH : ${pkgs.lib.makeBinPath runtimePackages}
+      '';
     }
   );
 in {
