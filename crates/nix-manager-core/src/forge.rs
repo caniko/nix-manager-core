@@ -2,13 +2,15 @@
 //!
 //! # Auth
 //!
-//! - **Codeberg**: `$CODEBERG_TOKEN` env var, falling back to the forgejo-cli
-//!   token file at `~/.local/share/forgejo-cli/<host>/TOKEN`.
+//! - **Codeberg**: reads the `fj` auth store at
+//!   `${XDG_DATA_HOME:-$HOME/.local/share}/forgejo-cli/keys.json`.
 //! - **GitHub**: delegates to the `gh` CLI.
 
 use anyhow::{anyhow, Result};
+use serde::Deserialize;
 use std::fs;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use crate::ui;
@@ -46,25 +48,72 @@ pub fn push_github_secret(repo: &str, name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a Codeberg/Forgejo bearer token from the environment or the
-/// forgejo-cli token file.
-pub fn codeberg_bearer_token(host: &str) -> Result<String> {
-    if let Ok(tok) = std::env::var("CODEBERG_TOKEN") {
-        let tok = tok.trim().to_string();
-        if !tok.is_empty() {
-            return Ok(tok);
-        }
-    }
-    let home = std::env::var("HOME").map_err(|_| anyhow!("HOME is not set"))?;
-    let path = format!("{home}/.local/share/forgejo-cli/{host}/TOKEN");
-    fs::read_to_string(&path)
-        .map(|s| s.trim().to_string())
-        .map_err(|e| {
+#[derive(Debug, Deserialize)]
+struct FjAuthStore {
+    hosts: std::collections::BTreeMap<String, FjHostAuth>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FjHostAuth {
+    token: String,
+}
+
+/// Resolve a Codeberg/Forgejo bearer token from the `fj` auth store.
+pub fn fj_bearer_token(host: &str) -> Result<String> {
+    let path = fj_auth_store_path()?;
+    let raw = fs::read_to_string(&path).map_err(|e| {
+        anyhow!(
+            "could not read fj auth store from {}: {e}\n\
+             run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
+            path.display()
+        )
+    })?;
+    let store: FjAuthStore = serde_json::from_str(&raw).map_err(|e| {
+        anyhow!(
+            "could not parse fj auth store from {}: {e}\n\
+             run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
+            path.display()
+        )
+    })?;
+    let token = store
+        .hosts
+        .get(host)
+        .ok_or_else(|| {
             anyhow!(
-                "could not read forge token from {path}: {e}\n\
-                 set CODEBERG_TOKEN or run `forgejo-cli auth login` against {host}"
+                "fj auth store {} has no token for {host}\n\
+                 run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
+                path.display()
             )
-        })
+        })?
+        .token
+        .trim()
+        .to_string();
+    if token.is_empty() {
+        return Err(anyhow!(
+            "fj auth store {} has an empty token for {host}\n\
+             run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
+            path.display()
+        ));
+    }
+    Ok(token)
+}
+
+/// Resolve a Codeberg/Forgejo bearer token from the `fj` auth store.
+pub fn codeberg_bearer_token(host: &str) -> Result<String> {
+    fj_bearer_token(host)
+}
+
+fn fj_auth_store_path() -> Result<PathBuf> {
+    let data_home = match std::env::var_os("XDG_DATA_HOME") {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => {
+            let home = std::env::var_os("HOME").ok_or_else(|| {
+                anyhow!("HOME is not set and XDG_DATA_HOME did not point to the fj auth store")
+            })?;
+            PathBuf::from(home).join(".local/share")
+        }
+    };
+    Ok(data_home.join("forgejo-cli/keys.json"))
 }
 
 fn parse_repo(repo: &str) -> Result<(&str, &str)> {
@@ -341,9 +390,10 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         let old_token = std::env::var("CODEBERG_TOKEN").ok();
         let old_home = std::env::var("HOME").ok();
+        let old_xdg_data_home = std::env::var("XDG_DATA_HOME").ok();
         std::env::remove_var("CODEBERG_TOKEN");
+        std::env::remove_var("XDG_DATA_HOME");
         let result = f();
-        // Restore original env
         match old_token {
             Some(v) => std::env::set_var("CODEBERG_TOKEN", v),
             None => std::env::remove_var("CODEBERG_TOKEN"),
@@ -352,48 +402,125 @@ mod tests {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
         }
+        match old_xdg_data_home {
+            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
         result
     }
 
+    fn write_fj_auth_store(data_home: &std::path::Path, host: &str, token: &str) {
+        let auth_dir = data_home.join("forgejo-cli");
+        fs::create_dir_all(&auth_dir).unwrap();
+        fs::write(
+            auth_dir.join("keys.json"),
+            format!(
+                r#"{{
+                  "hosts": {{
+                    "{host}": {{
+                      "type": "oauth",
+                      "name": "caniko",
+                      "token": "{token}",
+                      "refresh_token": "unused",
+                      "expires_at": [2026, 161, 6, 16, 47, 492946905, 0, 0, 0]
+                    }}
+                  }},
+                  "aliases": {{}},
+                  "default_ssh": []
+                }}"#
+            ),
+        )
+        .unwrap();
+    }
+
     #[test]
-    fn codeberg_bearer_token_uses_env_var() {
+    fn codeberg_bearer_token_reads_xdg_fj_auth_store() {
         with_clean_env(|| {
             let dir = tempfile::tempdir().unwrap();
-            std::env::set_var("CODEBERG_TOKEN", "env-token-value");
-            std::env::set_var("HOME", dir.path());
+            write_fj_auth_store(dir.path(), "codeberg.org", "fj-token-value");
+
+            std::env::set_var("XDG_DATA_HOME", dir.path());
 
             let result = codeberg_bearer_token("codeberg.org").unwrap();
-            assert_eq!(result, "env-token-value");
+            assert_eq!(result, "fj-token-value");
         });
     }
 
     #[test]
-    fn codeberg_bearer_token_env_var_wins_over_file() {
+    fn codeberg_bearer_token_falls_back_to_home_fj_auth_store() {
         with_clean_env(|| {
             let dir = tempfile::tempdir().unwrap();
-            let token_dir = dir.path().join(".local/share/forgejo-cli/codeberg.org");
-            fs::create_dir_all(&token_dir).unwrap();
-            fs::write(token_dir.join("TOKEN"), "file-token-value\n").unwrap();
-
-            std::env::set_var("CODEBERG_TOKEN", "env-token-value");
+            write_fj_auth_store(
+                &dir.path().join(".local/share"),
+                "codeberg.org",
+                "home-fj-token-value",
+            );
             std::env::set_var("HOME", dir.path());
 
             let result = codeberg_bearer_token("codeberg.org").unwrap();
-            assert_eq!(result, "env-token-value");
+            assert_eq!(result, "home-fj-token-value");
         });
     }
 
     #[test]
-    fn codeberg_bearer_token_falls_back_to_file() {
+    fn codeberg_bearer_token_errors_when_host_missing() {
+        with_clean_env(|| {
+            let dir = tempfile::tempdir().unwrap();
+            write_fj_auth_store(dir.path(), "git.example.test", "fj-token-value");
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+
+            let result = codeberg_bearer_token("codeberg.org");
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("no token for codeberg.org"));
+            assert!(err.contains("fj auth login --host codeberg.org"));
+        });
+    }
+
+    #[test]
+    fn codeberg_bearer_token_errors_when_token_empty() {
+        with_clean_env(|| {
+            let dir = tempfile::tempdir().unwrap();
+            write_fj_auth_store(dir.path(), "codeberg.org", "   ");
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+
+            let result = codeberg_bearer_token("codeberg.org");
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("empty token for codeberg.org"));
+            assert!(err.contains("fj auth add-key <user>"));
+        });
+    }
+
+    #[test]
+    fn codeberg_bearer_token_ignores_codeberg_token_env() {
+        with_clean_env(|| {
+            let dir = tempfile::tempdir().unwrap();
+            write_fj_auth_store(dir.path(), "codeberg.org", "fj-token-value");
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+            std::env::set_var("CODEBERG_TOKEN", "env-token-value");
+
+            let result = codeberg_bearer_token("codeberg.org").unwrap();
+            assert_eq!(result, "fj-token-value");
+        });
+    }
+
+    #[test]
+    fn codeberg_bearer_token_ignores_old_host_token_file() {
         with_clean_env(|| {
             let dir = tempfile::tempdir().unwrap();
             let token_dir = dir.path().join(".local/share/forgejo-cli/codeberg.org");
             fs::create_dir_all(&token_dir).unwrap();
-            fs::write(token_dir.join("TOKEN"), "file-token-value\n").unwrap();
+            fs::write(token_dir.join("TOKEN"), "old-file-token-value\n").unwrap();
+            write_fj_auth_store(
+                &dir.path().join(".local/share"),
+                "codeberg.org",
+                "fj-token-value",
+            );
             std::env::set_var("HOME", dir.path());
 
             let result = codeberg_bearer_token("codeberg.org").unwrap();
-            assert_eq!(result, "file-token-value");
+            assert_eq!(result, "fj-token-value");
         });
     }
 
@@ -406,7 +533,7 @@ mod tests {
             let result = codeberg_bearer_token("codeberg.org");
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
-            assert!(err.contains("CODEBERG_TOKEN") || err.contains("forgejo-cli"));
+            assert!(err.contains("fj auth login --host codeberg.org"));
         });
     }
 
