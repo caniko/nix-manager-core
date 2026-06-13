@@ -53,13 +53,46 @@ struct FjAuthStore {
     hosts: std::collections::BTreeMap<String, FjHostAuth>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct FjHostAuth {
+    #[serde(rename = "type")]
+    auth_type: String,
+    name: String,
     token: String,
 }
 
-/// Resolve a Codeberg/Forgejo bearer token from the `fj` auth store.
-pub fn fj_bearer_token(host: &str) -> Result<String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodebergAuthKind {
+    ApplicationToken,
+    OAuth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodebergAuth {
+    username: String,
+    token: String,
+    kind: CodebergAuthKind,
+}
+
+impl CodebergAuth {
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    pub fn forgejo_auth(&self) -> forgejo_api::Auth<'_> {
+        match self.kind {
+            CodebergAuthKind::ApplicationToken => forgejo_api::Auth::Token(&self.token),
+            CodebergAuthKind::OAuth => forgejo_api::Auth::OAuth2(&self.token),
+        }
+    }
+}
+
+/// Resolve Codeberg/Forgejo authentication from the `fj` auth store.
+pub fn codeberg_auth(host: &str) -> Result<CodebergAuth> {
     let path = fj_auth_store_path()?;
     let raw = fs::read_to_string(&path).map_err(|e| {
         anyhow!(
@@ -75,27 +108,63 @@ pub fn fj_bearer_token(host: &str) -> Result<String> {
             path.display()
         )
     })?;
-    let token = store
-        .hosts
-        .get(host)
-        .ok_or_else(|| {
-            anyhow!(
-                "fj auth store {} has no token for {host}\n\
+    let auth = store.hosts.get(host).ok_or_else(|| {
+        anyhow!(
+            "fj auth store {} has no token for {host}\n\
+                 run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
+            path.display()
+        )
+    })?;
+    auth.clone().validate(host, &path)
+}
+
+impl FjHostAuth {
+    fn validate(self, host: &str, path: &std::path::Path) -> Result<CodebergAuth> {
+        let token = self.token.trim().to_string();
+        let username = self.name.trim().to_string();
+
+        if token.is_empty() {
+            return Err(anyhow!(
+                "fj auth store {} has an empty token for {host}\n\
                  run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
                 path.display()
-            )
-        })?
-        .token
-        .trim()
-        .to_string();
-    if token.is_empty() {
-        return Err(anyhow!(
-            "fj auth store {} has an empty token for {host}\n\
-             run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
-            path.display()
-        ));
+            ));
+        }
+        if username.is_empty() {
+            return Err(anyhow!(
+                "fj auth store {} has no username for {host}\n\
+                 run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
+                path.display()
+            ));
+        }
+
+        let kind = match self.auth_type.trim().to_ascii_lowercase().as_str() {
+            "oauth" => CodebergAuthKind::OAuth,
+            "token" | "application" | "applicationtoken" | "application_token" | "key" => {
+                CodebergAuthKind::ApplicationToken
+            }
+            other => {
+                return Err(anyhow!(
+                    "fj auth store {} has unsupported auth type `{}` for {host}\n\
+                     run `fj auth add-key {username}` for unattended secret sync, \
+                     or refresh the OAuth entry with `fj auth login --host {host}`",
+                    path.display(),
+                    if other.is_empty() { "<empty>" } else { other }
+                ));
+            }
+        };
+
+        Ok(CodebergAuth {
+            username,
+            token,
+            kind,
+        })
     }
-    Ok(token)
+}
+
+/// Resolve a Codeberg/Forgejo bearer token from the `fj` auth store.
+pub fn fj_bearer_token(host: &str) -> Result<String> {
+    Ok(codeberg_auth(host)?.token)
 }
 
 /// Resolve a Codeberg/Forgejo bearer token from the `fj` auth store.
@@ -128,12 +197,37 @@ fn parse_repo(repo: &str) -> Result<(&str, &str)> {
     Ok((owner, repo_name))
 }
 
-fn codeberg_client(host: &str, bearer: &str) -> Result<forgejo_api::sync::Forgejo> {
+fn codeberg_client(host: &str, auth: &CodebergAuth) -> Result<forgejo_api::sync::Forgejo> {
     let base_url = url::Url::parse(&format!("https://{host}"))
         .map_err(|e| anyhow!("invalid host `{host}`: {e}"))?;
 
-    forgejo_api::sync::Forgejo::new(forgejo_api::Auth::Token(bearer), base_url)
+    forgejo_api::sync::Forgejo::new(auth.forgejo_auth(), base_url)
         .map_err(|e| anyhow!("failed to create forgejo client for {host}: {e}"))
+}
+
+fn require_authenticated_user(
+    host: &str,
+    api: &forgejo_api::sync::Forgejo,
+    auth: &CodebergAuth,
+) -> Result<String> {
+    let user = api.user_get_current().send().map_err(|e| {
+        anyhow!(
+            "failed to authenticate to {host} as `{}`: {e}\n\
+             run `fj auth add-key {}` for unattended secret sync, \
+             or refresh the OAuth entry with `fj auth login --host {host}`",
+            auth.username(),
+            auth.username()
+        )
+    })?;
+    let login = user.login.unwrap_or_default();
+    if login.trim().is_empty() {
+        return Err(anyhow!(
+            "authenticated user response from {host} did not include a login\n\
+             run `fj auth add-key {}` for unattended secret sync",
+            auth.username()
+        ));
+    }
+    Ok(login)
 }
 
 /// Push a secret to a Codeberg/Forgejo repository via its API.
@@ -141,10 +235,10 @@ pub fn push_codeberg_secret(host: &str, repo: &str, name: &str, value: &str) -> 
     ui::step(format!(
         "codeberg/{host}: setting `{name}` secret on {repo}"
     ));
-    let bearer = codeberg_bearer_token(host)?;
+    let auth = codeberg_auth(host)?;
 
     let (owner, repo_name) = parse_repo(repo)?;
-    let api = codeberg_client(host, &bearer)?;
+    let api = codeberg_client(host, &auth)?;
 
     api.update_repo_secret(
         owner,
@@ -170,10 +264,10 @@ pub fn push_codeberg_variable(host: &str, repo: &str, name: &str, value: &str) -
     ui::step(format!(
         "codeberg/{host}: setting `{name}` variable on {repo}"
     ));
-    let bearer = codeberg_bearer_token(host)?;
+    let auth = codeberg_auth(host)?;
 
     let (owner, repo_name) = parse_repo(repo)?;
-    let api = codeberg_client(host, &bearer)?;
+    let api = codeberg_client(host, &auth)?;
 
     let update = api
         .update_repo_variable(
@@ -225,8 +319,8 @@ pub fn push_codeberg_organization_secret(
     ui::step(format!(
         "codeberg/{host}: setting `{name}` organization secret on {org}"
     ));
-    let bearer = codeberg_bearer_token(host)?;
-    let api = codeberg_client(host, &bearer)?;
+    let auth = codeberg_auth(host)?;
+    let api = codeberg_client(host, &auth)?;
 
     api.update_org_secret(
         org,
@@ -256,8 +350,8 @@ pub fn push_codeberg_organization_variable(
     ui::step(format!(
         "codeberg/{host}: setting `{name}` organization variable on {org}"
     ));
-    let bearer = codeberg_bearer_token(host)?;
-    let api = codeberg_client(host, &bearer)?;
+    let auth = codeberg_auth(host)?;
+    let api = codeberg_client(host, &auth)?;
 
     let update = api
         .update_org_variable(
@@ -302,8 +396,10 @@ pub fn push_codeberg_user_secret(host: &str, name: &str, value: &str) -> Result<
     ui::step(format!(
         "codeberg/{host}: setting `{name}` user secret on authenticated user"
     ));
-    let bearer = codeberg_bearer_token(host)?;
-    let api = codeberg_client(host, &bearer)?;
+    let auth = codeberg_auth(host)?;
+    let api = codeberg_client(host, &auth)?;
+    let login = require_authenticated_user(host, &api, &auth)?;
+    ui::step(format!("codeberg/{host}: authenticated as {login}"));
 
     api.update_user_secret(
         name,
@@ -327,8 +423,10 @@ pub fn push_codeberg_user_variable(host: &str, name: &str, value: &str) -> Resul
     ui::step(format!(
         "codeberg/{host}: setting `{name}` user variable on authenticated user"
     ));
-    let bearer = codeberg_bearer_token(host)?;
-    let api = codeberg_client(host, &bearer)?;
+    let auth = codeberg_auth(host)?;
+    let api = codeberg_client(host, &auth)?;
+    let login = require_authenticated_user(host, &api, &auth)?;
+    ui::step(format!("codeberg/{host}: authenticated as {login}"));
 
     let update = api
         .update_user_variable(
@@ -410,6 +508,16 @@ mod tests {
     }
 
     fn write_fj_auth_store(data_home: &std::path::Path, host: &str, token: &str) {
+        write_fj_auth_store_with(data_home, host, "OAuth", "caniko", token);
+    }
+
+    fn write_fj_auth_store_with(
+        data_home: &std::path::Path,
+        host: &str,
+        auth_type: &str,
+        name: &str,
+        token: &str,
+    ) {
         let auth_dir = data_home.join("forgejo-cli");
         fs::create_dir_all(&auth_dir).unwrap();
         fs::write(
@@ -418,8 +526,8 @@ mod tests {
                 r#"{{
                   "hosts": {{
                     "{host}": {{
-                      "type": "oauth",
-                      "name": "caniko",
+                      "type": "{auth_type}",
+                      "name": "{name}",
                       "token": "{token}",
                       "refresh_token": "unused",
                       "expires_at": [2026, 161, 6, 16, 47, 492946905, 0, 0, 0]
@@ -431,6 +539,34 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn codeberg_auth_parses_oauth_fj_entry() {
+        with_clean_env(|| {
+            let dir = tempfile::tempdir().unwrap();
+            write_fj_auth_store(dir.path(), "codeberg.org", "oauth-token");
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+
+            let auth = codeberg_auth("codeberg.org").unwrap();
+            assert_eq!(auth.username(), "caniko");
+            assert_eq!(auth.token(), "oauth-token");
+            assert_eq!(auth.kind, CodebergAuthKind::OAuth);
+        });
+    }
+
+    #[test]
+    fn codeberg_auth_parses_application_token_fj_entry() {
+        with_clean_env(|| {
+            let dir = tempfile::tempdir().unwrap();
+            write_fj_auth_store_with(dir.path(), "codeberg.org", "Token", "caniko", "app-token");
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+
+            let auth = codeberg_auth("codeberg.org").unwrap();
+            assert_eq!(auth.username(), "caniko");
+            assert_eq!(auth.token(), "app-token");
+            assert_eq!(auth.kind, CodebergAuthKind::ApplicationToken);
+        });
     }
 
     #[test]
@@ -489,6 +625,36 @@ mod tests {
             let err = result.unwrap_err().to_string();
             assert!(err.contains("empty token for codeberg.org"));
             assert!(err.contains("fj auth add-key <user>"));
+        });
+    }
+
+    #[test]
+    fn codeberg_auth_errors_when_username_empty() {
+        with_clean_env(|| {
+            let dir = tempfile::tempdir().unwrap();
+            write_fj_auth_store_with(dir.path(), "codeberg.org", "OAuth", "   ", "token");
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+
+            let result = codeberg_auth("codeberg.org");
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("no username for codeberg.org"));
+            assert!(err.contains("fj auth add-key <user>"));
+        });
+    }
+
+    #[test]
+    fn codeberg_auth_errors_when_type_unsupported() {
+        with_clean_env(|| {
+            let dir = tempfile::tempdir().unwrap();
+            write_fj_auth_store_with(dir.path(), "codeberg.org", "Session", "caniko", "token");
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+
+            let result = codeberg_auth("codeberg.org");
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("unsupported auth type `session`"));
+            assert!(err.contains("fj auth add-key caniko"));
         });
     }
 
