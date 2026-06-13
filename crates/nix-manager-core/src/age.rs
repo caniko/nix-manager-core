@@ -41,16 +41,21 @@ pub struct DecryptSession {
 
 impl DecryptSession {
     pub fn from_identities(identities: &[PathBuf]) -> Result<Self> {
-        Self::from_identities_with(
-            identities,
-            runtime_secret_manager_dir()?,
-            materialize_fido2_hmac,
-        )
+        Self::from_identities_with_optional_runtime_dir(identities, None, materialize_fido2_hmac)
     }
 
+    #[cfg(test)]
     fn from_identities_with(
         identities: &[PathBuf],
         runtime_dir: PathBuf,
+        materialize: impl Fn(&Path) -> Result<Vec<u8>>,
+    ) -> Result<Self> {
+        Self::from_identities_with_optional_runtime_dir(identities, Some(runtime_dir), materialize)
+    }
+
+    fn from_identities_with_optional_runtime_dir(
+        identities: &[PathBuf],
+        mut runtime_dir: Option<PathBuf>,
         materialize: impl Fn(&Path) -> Result<Vec<u8>>,
     ) -> Result<Self> {
         if identities.is_empty() {
@@ -63,6 +68,10 @@ impl DecryptSession {
 
         for identity in identities {
             if is_fido2_hmac_identity_stub(identity)? {
+                let runtime_dir = match &runtime_dir {
+                    Some(path) => path,
+                    None => runtime_dir.insert(runtime_secret_manager_dir()?),
+                };
                 if !prepared_runtime_dir {
                     prepare_runtime_dir(&runtime_dir)?;
                     prepared_runtime_dir = true;
@@ -669,6 +678,24 @@ mod tests {
             panic!("non-FIDO identity should not be materialized")
         })
         .unwrap();
+
+        assert_eq!(session.identities(), &[software]);
+    }
+
+    #[test]
+    fn decrypt_session_does_not_require_xdg_runtime_dir_for_non_fido_identity() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let software = tmp.path().join("software.txt");
+        fs::write(&software, "AGE-SECRET-KEY-1example\n").unwrap();
+
+        let old_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+        std::env::remove_var("XDG_RUNTIME_DIR");
+        let session = DecryptSession::from_identities(std::slice::from_ref(&software)).unwrap();
+        match old_runtime {
+            Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+            None => std::env::remove_var("XDG_RUNTIME_DIR"),
+        }
 
         assert_eq!(session.identities(), &[software]);
     }
