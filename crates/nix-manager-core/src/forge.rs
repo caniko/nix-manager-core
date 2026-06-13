@@ -7,6 +7,7 @@
 //! - **GitHub**: delegates to the `gh` CLI.
 
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use std::fs;
 use std::io::Write;
@@ -59,6 +60,8 @@ struct FjHostAuth {
     auth_type: String,
     name: String,
     token: String,
+    refresh_token: Option<String>,
+    expires_at: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +123,15 @@ pub fn codeberg_auth(host: &str) -> Result<CodebergAuth> {
 
 impl FjHostAuth {
     fn validate(self, host: &str, path: &std::path::Path) -> Result<CodebergAuth> {
+        self.validate_at(host, path, Utc::now())
+    }
+
+    fn validate_at(
+        self,
+        host: &str,
+        path: &std::path::Path,
+        now: DateTime<Utc>,
+    ) -> Result<CodebergAuth> {
         let token = self.token.trim().to_string();
         let username = self.name.trim().to_string();
 
@@ -139,7 +151,27 @@ impl FjHostAuth {
         }
 
         let kind = match self.auth_type.trim().to_ascii_lowercase().as_str() {
-            "oauth" => CodebergAuthKind::OAuth,
+            "oauth" => {
+                let expires_at = parse_fj_expires_at(self.expires_at.as_deref(), host, path)?;
+                if expires_at <= now {
+                    let refresh_state = if self
+                        .refresh_token
+                        .as_deref()
+                        .is_some_and(|refresh_token| !refresh_token.trim().is_empty())
+                    {
+                        "the fj store has a refresh token, but secret-manager does not refresh OAuth tokens itself"
+                    } else {
+                        "the fj store has no refresh token"
+                    };
+                    return Err(anyhow!(
+                        "fj OAuth token for {username}@{host} expired at {expires_at}\n\
+                         {refresh_state}\n\
+                         run `fj auth login --host {host}` to refresh it, \
+                         or run `fj auth add-key {username}` to store an application token for unattended secret sync"
+                    ));
+                }
+                CodebergAuthKind::OAuth
+            }
             "token" | "application" | "applicationtoken" | "application_token" | "key" => {
                 CodebergAuthKind::ApplicationToken
             }
@@ -160,6 +192,88 @@ impl FjHostAuth {
             kind,
         })
     }
+}
+
+fn parse_fj_expires_at(
+    raw: Option<&[serde_json::Value]>,
+    host: &str,
+    path: &std::path::Path,
+) -> Result<DateTime<Utc>> {
+    let fields = raw.ok_or_else(|| {
+        anyhow!(
+            "fj OAuth entry in {} has no expires_at for {host}\n\
+             run `fj auth login --host {host}` to refresh it, \
+             or `fj auth add-key <user>` for unattended secret sync",
+            path.display()
+        )
+    })?;
+    if fields.len() < 6 {
+        return Err(anyhow!(
+            "fj OAuth entry in {} has malformed expires_at for {host}: expected at least 6 fields, got {}\n\
+             run `fj auth login --host {host}` to refresh it",
+            path.display(),
+            fields.len()
+        ));
+    }
+
+    let get_i32 = |idx: usize, name: &str| -> Result<i32> {
+        let value = fields[idx].as_i64().ok_or_else(|| {
+            anyhow!(
+                "fj OAuth entry in {} has non-integer expires_at field `{name}` for {host}\n\
+                 run `fj auth login --host {host}` to refresh it",
+                path.display()
+            )
+        })?;
+        i32::try_from(value).map_err(|_| {
+            anyhow!(
+                "fj OAuth entry in {} has out-of-range expires_at field `{name}` for {host}\n\
+                 run `fj auth login --host {host}` to refresh it",
+                path.display()
+            )
+        })
+    };
+    let get_u32 = |idx: usize, name: &str| -> Result<u32> {
+        let value = fields[idx].as_u64().ok_or_else(|| {
+            anyhow!(
+                "fj OAuth entry in {} has non-integer expires_at field `{name}` for {host}\n\
+                 run `fj auth login --host {host}` to refresh it",
+                path.display()
+            )
+        })?;
+        u32::try_from(value).map_err(|_| {
+            anyhow!(
+                "fj OAuth entry in {} has out-of-range expires_at field `{name}` for {host}\n\
+                 run `fj auth login --host {host}` to refresh it",
+                path.display()
+            )
+        })
+    };
+
+    let year = get_i32(0, "year")?;
+    let ordinal = get_u32(1, "ordinal")?;
+    let hour = get_u32(2, "hour")?;
+    let minute = get_u32(3, "minute")?;
+    let second = get_u32(4, "second")?;
+    let nanos = get_u32(5, "nanosecond")?;
+
+    let date = NaiveDate::from_yo_opt(year, ordinal).ok_or_else(|| {
+        anyhow!(
+            "fj OAuth entry in {} has invalid expires_at date for {host}\n\
+             run `fj auth login --host {host}` to refresh it",
+            path.display()
+        )
+    })?;
+    let datetime = date
+        .and_hms_nano_opt(hour, minute, second, nanos)
+        .ok_or_else(|| {
+            anyhow!(
+                "fj OAuth entry in {} has invalid expires_at time for {host}\n\
+             run `fj auth login --host {host}` to refresh it",
+                path.display()
+            )
+        })?;
+
+    Ok(DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc))
 }
 
 /// Resolve a Codeberg/Forgejo bearer token from the `fj` auth store.
@@ -530,7 +644,7 @@ mod tests {
                       "name": "{name}",
                       "token": "{token}",
                       "refresh_token": "unused",
-                      "expires_at": [2026, 161, 6, 16, 47, 492946905, 0, 0, 0]
+                      "expires_at": [2999, 161, 6, 16, 47, 492946905, 0, 0, 0]
                     }}
                   }},
                   "aliases": {{}},
@@ -655,6 +769,72 @@ mod tests {
             let err = result.unwrap_err().to_string();
             assert!(err.contains("unsupported auth type `session`"));
             assert!(err.contains("fj auth add-key caniko"));
+        });
+    }
+
+    #[test]
+    fn codeberg_auth_errors_when_oauth_token_expired() {
+        with_clean_env(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let auth_dir = dir.path().join("forgejo-cli");
+            fs::create_dir_all(&auth_dir).unwrap();
+            fs::write(
+                auth_dir.join("keys.json"),
+                r#"{
+                  "hosts": {
+                    "codeberg.org": {
+                      "type": "OAuth",
+                      "name": "caniko",
+                      "token": "expired-token",
+                      "refresh_token": "refresh-token",
+                      "expires_at": [2000, 1, 0, 0, 0, 0, 0, 0, 0]
+                    }
+                  },
+                  "aliases": {},
+                  "default_ssh": []
+                }"#,
+            )
+            .unwrap();
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+
+            let result = codeberg_auth("codeberg.org");
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("OAuth token for caniko@codeberg.org expired"));
+            assert!(err.contains("does not refresh OAuth tokens itself"));
+            assert!(err.contains("fj auth login --host codeberg.org"));
+            assert!(err.contains("fj auth add-key caniko"));
+        });
+    }
+
+    #[test]
+    fn codeberg_auth_errors_when_oauth_expiry_missing() {
+        with_clean_env(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let auth_dir = dir.path().join("forgejo-cli");
+            fs::create_dir_all(&auth_dir).unwrap();
+            fs::write(
+                auth_dir.join("keys.json"),
+                r#"{
+                  "hosts": {
+                    "codeberg.org": {
+                      "type": "OAuth",
+                      "name": "caniko",
+                      "token": "oauth-token"
+                    }
+                  },
+                  "aliases": {},
+                  "default_ssh": []
+                }"#,
+            )
+            .unwrap();
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+
+            let result = codeberg_auth("codeberg.org");
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("has no expires_at for codeberg.org"));
+            assert!(err.contains("fj auth login --host codeberg.org"));
         });
     }
 
