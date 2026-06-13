@@ -14,12 +14,102 @@
 //! colon-separated environment variable, then the store's master identity
 //! stubs under `<root>/age/`.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::ffi::OsString;
+use std::fs;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ui;
+
+const FIDO2_HMAC_IDENTITY_PREFIX: &str = "AGE-PLUGIN-FIDO2-HMAC-";
+static SESSION_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A run-scoped age decryption session.
+///
+/// FIDO2 hmac identities are materialized once into private runtime files and
+/// removed when the session is dropped. Plain software identities are reused
+/// directly.
+#[derive(Debug)]
+pub struct DecryptSession {
+    identities: Vec<PathBuf>,
+    materialized: Vec<PathBuf>,
+}
+
+impl DecryptSession {
+    pub fn from_identities(identities: &[PathBuf]) -> Result<Self> {
+        Self::from_identities_with(
+            identities,
+            runtime_secret_manager_dir()?,
+            materialize_fido2_hmac,
+        )
+    }
+
+    fn from_identities_with(
+        identities: &[PathBuf],
+        runtime_dir: PathBuf,
+        materialize: impl Fn(&Path) -> Result<Vec<u8>>,
+    ) -> Result<Self> {
+        if identities.is_empty() {
+            bail!("no identities attempted");
+        }
+
+        let mut session_identities = Vec::with_capacity(identities.len());
+        let mut materialized = Vec::new();
+        let mut prepared_runtime_dir = false;
+
+        for identity in identities {
+            if is_fido2_hmac_identity_stub(identity)? {
+                if !prepared_runtime_dir {
+                    prepare_runtime_dir(&runtime_dir)?;
+                    prepared_runtime_dir = true;
+                }
+                ui::step(format!(
+                    "materializing FIDO2 age identity from {} for this sync process; \
+                     the temporary identity is mode 0600 and is removed after the run",
+                    identity.display()
+                ));
+                let bytes = materialize(identity)?;
+                if bytes.is_empty() {
+                    bail!(
+                        "age-plugin-fido2-hmac -m {} produced an empty identity",
+                        identity.display()
+                    );
+                }
+                let path = write_materialized_identity(&runtime_dir, &bytes)?;
+                session_identities.push(path.clone());
+                materialized.push(path);
+            } else {
+                session_identities.push(identity.clone());
+            }
+        }
+
+        Ok(Self {
+            identities: session_identities,
+            materialized,
+        })
+    }
+
+    pub fn identities(&self) -> &[PathBuf] {
+        &self.identities
+    }
+}
+
+impl Drop for DecryptSession {
+    fn drop(&mut self) {
+        for path in &self.materialized {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// Decrypt with a run-scoped session.
+pub fn decrypt_with_session(secret: &Path, session: &DecryptSession) -> Result<String> {
+    decrypt_with_identities(secret, session.identities())
+}
 
 /// Decrypt with all identities passed to one `rage --decrypt` invocation.
 /// Returns the plaintext with one trailing newline stripped.
@@ -150,6 +240,108 @@ fn is_master_identity_stub(name: &str) -> bool {
     (name.starts_with("master-") || name.starts_with("master_")) && name.ends_with(".pub")
 }
 
+fn is_fido2_hmac_identity_stub(path: &Path) -> Result<bool> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading age identity {}", path.display()))?;
+    Ok(raw
+        .lines()
+        .map(str::trim)
+        .any(|line| line.starts_with(FIDO2_HMAC_IDENTITY_PREFIX)))
+}
+
+fn runtime_secret_manager_dir() -> Result<PathBuf> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| {
+        anyhow!(
+            "XDG_RUNTIME_DIR is required to materialize FIDO2 age identities for one-touch sync; \
+             refusing to write the temporary identity to a persistent directory"
+        )
+    })?;
+    if runtime.is_empty() {
+        bail!(
+            "XDG_RUNTIME_DIR is empty; refusing to materialize FIDO2 age identities outside a private runtime directory"
+        );
+    }
+    Ok(PathBuf::from(runtime).join("secret-manager"))
+}
+
+fn prepare_runtime_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)
+        .with_context(|| format!("creating private runtime directory {}", path.display()))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("setting mode 0700 on {}", path.display()))?;
+    let mode = fs::metadata(path)
+        .with_context(|| format!("checking permissions on {}", path.display()))?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode != 0o700 {
+        bail!(
+            "{} has mode {:03o}, expected 700 for materialized FIDO2 identities",
+            path.display(),
+            mode
+        );
+    }
+    Ok(())
+}
+
+fn materialize_fido2_hmac(identity: &Path) -> Result<Vec<u8>> {
+    let out = Command::new("age-plugin-fido2-hmac")
+        .arg("-m")
+        .arg(identity)
+        .stdin(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|e| anyhow!("failed to spawn age-plugin-fido2-hmac: {e}"))?;
+    if !out.status.success() {
+        bail!(
+            "age-plugin-fido2-hmac -m {} exited with {}. \
+             This command materializes a temporary age identity for the sync process; \
+             touch the matching hardware key when prompted.",
+            identity.display(),
+            out.status
+        );
+    }
+    Ok(out.stdout)
+}
+
+fn write_materialized_identity(runtime_dir: &Path, bytes: &[u8]) -> Result<PathBuf> {
+    let id = SESSION_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = runtime_dir.join(format!(
+        "materialized-age-identity-{}-{id}",
+        std::process::id()
+    ));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| {
+            format!(
+                "creating temporary materialized identity {}",
+                path.display()
+            )
+        })?;
+    file.write_all(bytes)
+        .with_context(|| format!("writing temporary materialized identity {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("fsync temporary materialized identity {}", path.display()))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("setting mode 0600 on {}", path.display()))?;
+    let mode = fs::metadata(&path)
+        .with_context(|| format!("checking permissions on {}", path.display()))?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode != 0o600 {
+        bail!(
+            "{} has mode {:03o}, expected 600 for materialized FIDO2 identity",
+            path.display(),
+            mode
+        );
+    }
+    Ok(path)
+}
+
 fn rage_decrypt_args(secret: &Path, identities: &[PathBuf]) -> Vec<OsString> {
     let mut args = Vec::with_capacity(1 + identities.len() * 2 + 1);
     args.push(OsString::from("--decrypt"));
@@ -175,8 +367,10 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::process::Command;
+    use std::sync::Mutex;
 
     const ENV_VAR: &str = "TEST_AGE_IDENTITIES";
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct Fixture {
         _dir: tempfile::TempDir,
@@ -409,6 +603,95 @@ mod tests {
         let msg = err.to_string();
         assert!(
             msg.contains("master identity stubs"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn fido2_hmac_identity_stub_detection_uses_identity_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fido = tmp.path().join("fido.pub");
+        fs::write(
+            &fido,
+            "# created: 2026-06-13T00:00:00Z\n# public key: age1example\nAGE-PLUGIN-FIDO2-HMAC-test\n",
+        )
+        .unwrap();
+        let software = tmp.path().join("software.txt");
+        fs::write(&software, "AGE-SECRET-KEY-1example\n").unwrap();
+
+        assert!(is_fido2_hmac_identity_stub(&fido).unwrap());
+        assert!(!is_fido2_hmac_identity_stub(&software).unwrap());
+    }
+
+    #[test]
+    fn decrypt_session_materializes_fido2_identity_mode_0600_and_removes_on_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = tmp.path().join("runtime").join("secret-manager");
+        let fido = tmp.path().join("fido.pub");
+        fs::write(&fido, "AGE-PLUGIN-FIDO2-HMAC-test\n").unwrap();
+
+        let materialized_path = {
+            let session =
+                DecryptSession::from_identities_with(&[fido], runtime.clone(), |_identity| {
+                    Ok(b"AGE-SECRET-KEY-1materialized\n".to_vec())
+                })
+                .unwrap();
+
+            assert_eq!(session.identities().len(), 1);
+            let path = session.identities()[0].clone();
+            assert!(path.starts_with(&runtime));
+            assert_eq!(
+                fs::metadata(&runtime).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                "AGE-SECRET-KEY-1materialized\n"
+            );
+            path
+        };
+
+        assert!(!materialized_path.exists());
+    }
+
+    #[test]
+    fn decrypt_session_leaves_non_fido_identity_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = tmp.path().join("runtime").join("secret-manager");
+        let software = tmp.path().join("software.txt");
+        fs::write(&software, "AGE-SECRET-KEY-1example\n").unwrap();
+
+        let session = DecryptSession::from_identities_with(&[software.clone()], runtime, |_| {
+            panic!("non-FIDO identity should not be materialized")
+        })
+        .unwrap();
+
+        assert_eq!(session.identities(), &[software]);
+    }
+
+    #[test]
+    fn decrypt_session_requires_xdg_runtime_dir_for_fido2_identity() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let fido = tmp.path().join("fido.pub");
+        fs::write(&fido, "AGE-PLUGIN-FIDO2-HMAC-test\n").unwrap();
+
+        let old_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+        std::env::remove_var("XDG_RUNTIME_DIR");
+        let err = DecryptSession::from_identities(&[fido]).unwrap_err();
+        match old_runtime {
+            Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+            None => std::env::remove_var("XDG_RUNTIME_DIR"),
+        }
+
+        let msg = err.to_string();
+        assert!(msg.contains("XDG_RUNTIME_DIR"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("refusing to write the temporary identity to a persistent directory"),
             "unexpected error: {msg}"
         );
     }
