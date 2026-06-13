@@ -94,28 +94,42 @@ impl CodebergAuth {
     }
 }
 
+fn fj_auth_login_command(host: &str) -> String {
+    format!("fj -H {host} auth login")
+}
+
+fn fj_auth_add_key_command(host: &str, username: &str) -> String {
+    format!("fj -H {host} auth add-key {username}")
+}
+
 /// Resolve Codeberg/Forgejo authentication from the `fj` auth store.
 pub fn codeberg_auth(host: &str) -> Result<CodebergAuth> {
     let path = fj_auth_store_path()?;
     let raw = fs::read_to_string(&path).map_err(|e| {
         anyhow!(
             "could not read fj auth store from {}: {e}\n\
-             run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
-            path.display()
+             run `{}` or `{}` for {host}",
+            path.display(),
+            fj_auth_login_command(host),
+            fj_auth_add_key_command(host, "<user>")
         )
     })?;
     let store: FjAuthStore = serde_json::from_str(&raw).map_err(|e| {
         anyhow!(
             "could not parse fj auth store from {}: {e}\n\
-             run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
-            path.display()
+             run `{}` or `{}` for {host}",
+            path.display(),
+            fj_auth_login_command(host),
+            fj_auth_add_key_command(host, "<user>")
         )
     })?;
     let auth = store.hosts.get(host).ok_or_else(|| {
         anyhow!(
             "fj auth store {} has no token for {host}\n\
-                 run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
-            path.display()
+                 run `{}` or `{}` for {host}",
+            path.display(),
+            fj_auth_login_command(host),
+            fj_auth_add_key_command(host, "<user>")
         )
     })?;
     auth.clone().validate(host, &path)
@@ -138,15 +152,19 @@ impl FjHostAuth {
         if token.is_empty() {
             return Err(anyhow!(
                 "fj auth store {} has an empty token for {host}\n\
-                 run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
-                path.display()
+                 run `{}` or `{}` for {host}",
+                path.display(),
+                fj_auth_login_command(host),
+                fj_auth_add_key_command(host, "<user>")
             ));
         }
         if username.is_empty() {
             return Err(anyhow!(
                 "fj auth store {} has no username for {host}\n\
-                 run `fj auth login --host {host}` or `fj auth add-key <user>` for {host}",
-                path.display()
+                 run `{}` or `{}` for {host}",
+                path.display(),
+                fj_auth_login_command(host),
+                fj_auth_add_key_command(host, "<user>")
             ));
         }
 
@@ -165,9 +183,12 @@ impl FjHostAuth {
                     };
                     return Err(anyhow!(
                         "fj OAuth token for {username}@{host} expired at {expires_at}\n\
+                         fj auth store still has {host} as OAuth\n\
                          {refresh_state}\n\
-                         run `fj auth login --host {host}` to refresh it, \
-                         or run `fj auth add-key {username}` to store an application token for unattended secret sync"
+                         run `{}` to refresh it, \
+                         or run `{}` to store an application token for unattended secret sync",
+                        fj_auth_login_command(host),
+                        fj_auth_add_key_command(host, &username)
                     ));
                 }
                 CodebergAuthKind::OAuth
@@ -178,10 +199,12 @@ impl FjHostAuth {
             other => {
                 return Err(anyhow!(
                     "fj auth store {} has unsupported auth type `{}` for {host}\n\
-                     run `fj auth add-key {username}` for unattended secret sync, \
-                     or refresh the OAuth entry with `fj auth login --host {host}`",
+                     run `{}` for unattended secret sync, \
+                     or refresh the OAuth entry with `{}`",
                     path.display(),
-                    if other.is_empty() { "<empty>" } else { other }
+                    if other.is_empty() { "<empty>" } else { other },
+                    fj_auth_add_key_command(host, &username),
+                    fj_auth_login_command(host)
                 ));
             }
         };
@@ -202,17 +225,20 @@ fn parse_fj_expires_at(
     let fields = raw.ok_or_else(|| {
         anyhow!(
             "fj OAuth entry in {} has no expires_at for {host}\n\
-             run `fj auth login --host {host}` to refresh it, \
-             or `fj auth add-key <user>` for unattended secret sync",
-            path.display()
+             run `{}` to refresh it, \
+             or `{}` for unattended secret sync",
+            path.display(),
+            fj_auth_login_command(host),
+            fj_auth_add_key_command(host, "<user>")
         )
     })?;
     if fields.len() < 6 {
         return Err(anyhow!(
             "fj OAuth entry in {} has malformed expires_at for {host}: expected at least 6 fields, got {}\n\
-             run `fj auth login --host {host}` to refresh it",
+             run `{}` to refresh it",
             path.display(),
-            fields.len()
+            fields.len(),
+            fj_auth_login_command(host)
         ));
     }
 
@@ -220,15 +246,17 @@ fn parse_fj_expires_at(
         let value = fields[idx].as_i64().ok_or_else(|| {
             anyhow!(
                 "fj OAuth entry in {} has non-integer expires_at field `{name}` for {host}\n\
-                 run `fj auth login --host {host}` to refresh it",
-                path.display()
+                 run `{}` to refresh it",
+                path.display(),
+                fj_auth_login_command(host)
             )
         })?;
         i32::try_from(value).map_err(|_| {
             anyhow!(
                 "fj OAuth entry in {} has out-of-range expires_at field `{name}` for {host}\n\
-                 run `fj auth login --host {host}` to refresh it",
-                path.display()
+                 run `{}` to refresh it",
+                path.display(),
+                fj_auth_login_command(host)
             )
         })
     };
@@ -236,15 +264,17 @@ fn parse_fj_expires_at(
         let value = fields[idx].as_u64().ok_or_else(|| {
             anyhow!(
                 "fj OAuth entry in {} has non-integer expires_at field `{name}` for {host}\n\
-                 run `fj auth login --host {host}` to refresh it",
-                path.display()
+                 run `{}` to refresh it",
+                path.display(),
+                fj_auth_login_command(host)
             )
         })?;
         u32::try_from(value).map_err(|_| {
             anyhow!(
                 "fj OAuth entry in {} has out-of-range expires_at field `{name}` for {host}\n\
-                 run `fj auth login --host {host}` to refresh it",
-                path.display()
+                 run `{}` to refresh it",
+                path.display(),
+                fj_auth_login_command(host)
             )
         })
     };
@@ -259,8 +289,9 @@ fn parse_fj_expires_at(
     let date = NaiveDate::from_yo_opt(year, ordinal).ok_or_else(|| {
         anyhow!(
             "fj OAuth entry in {} has invalid expires_at date for {host}\n\
-             run `fj auth login --host {host}` to refresh it",
-            path.display()
+             run `{}` to refresh it",
+            path.display(),
+            fj_auth_login_command(host)
         )
     })?;
     let datetime = date
@@ -268,8 +299,9 @@ fn parse_fj_expires_at(
         .ok_or_else(|| {
             anyhow!(
                 "fj OAuth entry in {} has invalid expires_at time for {host}\n\
-             run `fj auth login --host {host}` to refresh it",
-                path.display()
+             run `{}` to refresh it",
+                path.display(),
+                fj_auth_login_command(host)
             )
         })?;
 
@@ -327,18 +359,19 @@ fn require_authenticated_user(
     let user = api.user_get_current().send().map_err(|e| {
         anyhow!(
             "failed to authenticate to {host} as `{}`: {e}\n\
-             run `fj auth add-key {}` for unattended secret sync, \
-             or refresh the OAuth entry with `fj auth login --host {host}`",
+             run `{}` for unattended secret sync, \
+             or refresh the OAuth entry with `{}`",
             auth.username(),
-            auth.username()
+            fj_auth_add_key_command(host, auth.username()),
+            fj_auth_login_command(host)
         )
     })?;
     let login = user.login.unwrap_or_default();
     if login.trim().is_empty() {
         return Err(anyhow!(
             "authenticated user response from {host} did not include a login\n\
-             run `fj auth add-key {}` for unattended secret sync",
-            auth.username()
+             run `{}` for unattended secret sync",
+            fj_auth_add_key_command(host, auth.username())
         ));
     }
     Ok(login)
@@ -723,7 +756,8 @@ mod tests {
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
             assert!(err.contains("no token for codeberg.org"));
-            assert!(err.contains("fj auth login --host codeberg.org"));
+            assert!(err.contains("fj -H codeberg.org auth login"));
+            assert!(err.contains("fj -H codeberg.org auth add-key <user>"));
         });
     }
 
@@ -738,7 +772,8 @@ mod tests {
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
             assert!(err.contains("empty token for codeberg.org"));
-            assert!(err.contains("fj auth add-key <user>"));
+            assert!(err.contains("fj -H codeberg.org auth login"));
+            assert!(err.contains("fj -H codeberg.org auth add-key <user>"));
         });
     }
 
@@ -753,7 +788,8 @@ mod tests {
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
             assert!(err.contains("no username for codeberg.org"));
-            assert!(err.contains("fj auth add-key <user>"));
+            assert!(err.contains("fj -H codeberg.org auth login"));
+            assert!(err.contains("fj -H codeberg.org auth add-key <user>"));
         });
     }
 
@@ -768,7 +804,8 @@ mod tests {
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
             assert!(err.contains("unsupported auth type `session`"));
-            assert!(err.contains("fj auth add-key caniko"));
+            assert!(err.contains("fj -H codeberg.org auth add-key caniko"));
+            assert!(err.contains("fj -H codeberg.org auth login"));
         });
     }
 
@@ -801,9 +838,10 @@ mod tests {
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
             assert!(err.contains("OAuth token for caniko@codeberg.org expired"));
+            assert!(err.contains("fj auth store still has codeberg.org as OAuth"));
             assert!(err.contains("does not refresh OAuth tokens itself"));
-            assert!(err.contains("fj auth login --host codeberg.org"));
-            assert!(err.contains("fj auth add-key caniko"));
+            assert!(err.contains("fj -H codeberg.org auth login"));
+            assert!(err.contains("fj -H codeberg.org auth add-key caniko"));
         });
     }
 
@@ -834,7 +872,8 @@ mod tests {
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
             assert!(err.contains("has no expires_at for codeberg.org"));
-            assert!(err.contains("fj auth login --host codeberg.org"));
+            assert!(err.contains("fj -H codeberg.org auth login"));
+            assert!(err.contains("fj -H codeberg.org auth add-key <user>"));
         });
     }
 
@@ -879,7 +918,7 @@ mod tests {
             let result = codeberg_bearer_token("codeberg.org");
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
-            assert!(err.contains("fj auth login --host codeberg.org"));
+            assert!(err.contains("fj -H codeberg.org auth login"));
         });
     }
 
