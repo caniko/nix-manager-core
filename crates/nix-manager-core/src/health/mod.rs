@@ -203,7 +203,11 @@ impl Report {
             .results
             .iter()
             .any(|r| r.status == Status::Fail || (strict && r.status == Status::Warn));
-        if bad { 1 } else { 0 }
+        if bad {
+            1
+        } else {
+            0
+        }
     }
     /// One-line tagline matching the nu script's verdict copy.
     pub fn verdict(&self) -> &'static str {

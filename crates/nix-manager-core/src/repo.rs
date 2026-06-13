@@ -8,7 +8,7 @@
 //! (lockfile bumps, git index writes) via an OS-level exclusive flock so that
 //! concurrent invocations do not corrupt shared state.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;

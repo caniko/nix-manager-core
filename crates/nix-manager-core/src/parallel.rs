@@ -1,5 +1,5 @@
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::thread;
 
 /// Run `f` over `items` with at most `max_workers` threads in flight.
@@ -30,16 +30,14 @@ where
 
     thread::scope(|s| {
         for _ in 0..workers {
-            s.spawn(move || {
-                loop {
-                    let i = next_ref.fetch_add(1, Ordering::Relaxed);
-                    if i >= n {
-                        return;
-                    }
-                    let item = inputs_ref[i].lock().unwrap().take().unwrap();
-                    let r = f_ref(item);
-                    *outputs_ref[i].lock().unwrap() = Some(r);
+            s.spawn(move || loop {
+                let i = next_ref.fetch_add(1, Ordering::Relaxed);
+                if i >= n {
+                    return;
                 }
+                let item = inputs_ref[i].lock().unwrap().take().unwrap();
+                let r = f_ref(item);
+                *outputs_ref[i].lock().unwrap() = Some(r);
             });
         }
     });
@@ -113,7 +111,11 @@ mod tests {
     #[test]
     fn results_carry_per_item_errors() {
         let out: Vec<Result<i32, &'static str>> = parallel_map((0..6).collect(), 3, |x: i32| {
-            if x % 2 == 0 { Ok(x * 10) } else { Err("odd") }
+            if x % 2 == 0 {
+                Ok(x * 10)
+            } else {
+                Err("odd")
+            }
         });
         let oks: Vec<i32> = out
             .iter()

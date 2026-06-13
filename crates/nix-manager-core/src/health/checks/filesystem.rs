@@ -188,7 +188,11 @@ impl Check for StoragePath {
         if mount_line.is_empty() {
             problems.push("path is not on a recognized mountpoint".to_string());
         }
-        if let Some(want) = self.expected_owner.as_ref().filter(|w| !owner_mode.starts_with(*w)) {
+        if let Some(want) = self
+            .expected_owner
+            .as_ref()
+            .filter(|w| !owner_mode.starts_with(*w))
+        {
             problems.push(format!(
                 "ownership is {owner_mode}, expected {want} (mode digits may follow)"
             ));
