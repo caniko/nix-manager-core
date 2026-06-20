@@ -1,12 +1,15 @@
 //! age decryption with identity fallback, and the shared identity-resolution
 //! contract used by manager-flake CLIs.
 //!
-//! [`decrypt_with_identities`] passes every candidate identity to one
-//! `rage --decrypt` invocation. stderr / stdin stay on the terminal so
-//! hardware-key PIN/touch prompts work; only stdout (the plaintext) is
-//! captured. A single trailing newline is stripped because agenix payloads are
-//! commonly newline-terminated, while downstream secret stores expect the bare
-//! value.
+//! [`decrypt_with_identities`] tries identities **sequentially** — one
+//! `rage --decrypt` subprocess per identity — and stops at the first success.
+//! This avoids a `rage` bug where multiple `AGE-PLUGIN-FIDO2-HMAC` identity
+//! stubs passed to a single invocation cause it to hang at "Waiting for
+//! age-plugin-fido2-hmac..." without ever prompting for a hardware touch.
+//! stderr / stdin stay on the terminal so hardware-key PIN/touch prompts work;
+//! only stdout (the plaintext) is captured. A single trailing newline is
+//! stripped because agenix payloads are commonly newline-terminated, while
+//! downstream secret stores expect the bare value.
 //!
 //! [`resolve_identities`] implements the configuration surface every manager
 //! flow shares (secret-manager's `SECRET_MANAGER_AGE_IDENTITIES`, the DNS
@@ -14,7 +17,7 @@
 //! colon-separated environment variable, then the store's master identity
 //! stubs under `<root>/age/`.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -52,30 +55,77 @@ pub fn decrypt_with_session(secret: &Path, session: &DecryptSession) -> Result<S
     decrypt_with_identities(secret, session.identities())
 }
 
-/// Decrypt with all identities passed to one `rage --decrypt` invocation.
+/// Decrypt by trying each identity **sequentially** — one `rage --decrypt`
+/// subprocess per identity — and returning the first success.
+///
+/// See the module-level doc for why this approach avoids a `rage` hang when
+/// multiple `AGE-PLUGIN-FIDO2-HMAC` identity stubs are present.
 /// Returns the plaintext with one trailing newline stripped.
 pub fn decrypt_with_identities(secret: &Path, identities: &[PathBuf]) -> Result<String> {
     if identities.is_empty() {
         bail!("no identities attempted");
     }
 
+    let mut last_err = None;
+    for identity in identities {
+        match try_decrypt_with_single_identity(secret, identity) {
+            Ok(plaintext) => return Ok(plaintext),
+            Err(e) => {
+                // Propagate Ctrl-C immediately rather than trying more identities.
+                if e.downcast_ref::<std::io::Error>()
+                    .is_some_and(|ioe| ioe.kind() == std::io::ErrorKind::Interrupted)
+                {
+                    return Err(e);
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        anyhow!(
+            "none of the {} identity(ies) could decrypt {}",
+            identities.len(),
+            secret.display(),
+        )
+    }))
+}
+
+/// Run `rage --decrypt --identity <identity> <secret>` and return the
+/// plaintext. stderr and stdin are inherited so FIDO2 touch prompts work
+/// transparently.
+fn try_decrypt_with_single_identity(secret: &Path, identity: &PathBuf) -> Result<String> {
     ui::step(format!(
         "decrypting {} with {}",
         secret.display(),
-        describe_identities(identities)
+        identity.display(),
     ));
+
     let out = Command::new("rage")
-        .args(rage_decrypt_args(secret, identities))
+        .args(rage_decrypt_args(secret, &[identity.clone()]))
         .stdin(Stdio::inherit())
         .stderr(Stdio::inherit())
         .output()
         .map_err(|e| anyhow!("failed to spawn rage: {e}"))?;
     if !out.status.success() {
-        bail!(
-            "rage --decrypt with identities {} exited with {}. Check that the matching hardware key is present and touch it when prompted.",
-            describe_identities(identities),
-            out.status
-        );
+        // If the child was killed by a signal (e.g., Ctrl-C during FIDO2 touch
+        // prompt), propagate that as an io::Error so the caller can abort the
+        // identity fallback loop rather than silently trying the next identity.
+        if out.status.code().is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                format!(
+                    "rage --decrypt with {} was terminated by signal",
+                    identity.display(),
+                ),
+            ))
+            .context("decryption interrupted");
+        }
+        return Err(anyhow!(
+            "rage --decrypt with {} exited with {}",
+            identity.display(),
+            out.status,
+        ));
     }
 
     let mut value = String::from_utf8(out.stdout)
@@ -192,14 +242,6 @@ fn rage_decrypt_args(secret: &Path, identities: &[PathBuf]) -> Vec<OsString> {
     args
 }
 
-fn describe_identities(identities: &[PathBuf]) -> String {
-    identities
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,28 +323,25 @@ mod tests {
     }
 
     #[test]
-    fn builds_single_rage_command_with_multiple_identities() {
+    fn builds_rage_decrypt_args_for_single_identity() {
         let secret = PathBuf::from("secret.age");
-        let first = PathBuf::from("age/master-a-identity.pub");
-        let second = PathBuf::from("age/master_b_identity.pub");
+        let identity = PathBuf::from("age/master_nitro3c_identity.pub");
 
-        let args = rage_decrypt_args(&secret, &[first.clone(), second.clone()]);
+        let args = rage_decrypt_args(&secret, &[identity.clone()]);
 
         assert_eq!(
             args,
             vec![
                 OsString::from("--decrypt"),
                 OsString::from("--identity"),
-                first.into_os_string(),
-                OsString::from("--identity"),
-                second.into_os_string(),
+                identity.into_os_string(),
                 secret.into_os_string(),
             ]
         );
     }
 
     #[test]
-    fn decrypts_with_second_identity_in_single_rage_invocation() {
+    fn decrypts_with_second_identity_via_fallback() {
         let wrong = setup_fixture();
         let right = setup_fixture();
         let dir = tempfile::tempdir().unwrap();
