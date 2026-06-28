@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Result};
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::ui;
@@ -9,6 +9,10 @@ pub const RESULTS_ROOT: &str = ".nix-results";
 /// Walk `.` for files with a `.nix` extension whose body contains `marker`.
 /// `marker` is matched as a literal substring (no regex). Unreadable files are
 /// silently skipped. Symlinks are followed by `walkdir`'s default.
+///
+/// Paths under a `store` component (e.g. `/nix/store/` or a committed `nix/store/`
+/// directory) are skipped — Nix store paths are immutable and we must never try
+/// to write back to them.
 pub fn find_nix_files_containing(marker: &str) -> Result<Vec<PathBuf>> {
     let mut out: Vec<PathBuf> = Vec::new();
     for entry in walkdir::WalkDir::new(".") {
@@ -18,6 +22,12 @@ pub fn find_nix_files_containing(marker: &str) -> Result<Vec<PathBuf>> {
         }
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("nix") {
+            continue;
+        }
+        if path
+            .components()
+            .any(|c| c == Component::Normal(std::ffi::OsStr::new("store")))
+        {
             continue;
         }
         let raw = match std::fs::read_to_string(path) {
