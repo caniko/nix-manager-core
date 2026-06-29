@@ -49,6 +49,14 @@ impl SshTarget {
         Ok(status)
     }
 
+    /// Build a `Command` for running via stdin piping or custom stdio.
+    pub fn command(&self, cmd: &str) -> Command {
+        let mut c = Command::new("ssh");
+        c.args(self.ssh_args());
+        c.arg(cmd);
+        c
+    }
+
     /// Capture stdout from a remote command.
     pub fn capture(&self, cmd: &str) -> Result<String> {
         let mut args = self.ssh_args();
