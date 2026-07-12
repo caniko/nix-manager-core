@@ -147,7 +147,11 @@ impl Check for StoragePath {
             "df",
             ["-B1", "--output=source,size,used,avail,pcent,target", &p],
         );
-        let df_inodes = cap("df", ["-i", "--output=iavail,target", &p]);
+        // `df -i` cannot be combined with `--output` on GNU coreutils. Use
+        // the inode-specific output fields instead; filesystems such as
+        // Btrfs report an inode total of zero when inode accounting is not
+        // applicable, which must not be treated as inode exhaustion.
+        let df_inodes = cap("df", ["--output=itotal,iavail,target", &p]);
 
         let owner_mode = stat.stdout.trim().to_string();
         let mount_line = mnt.stdout.trim().to_string();
@@ -165,13 +169,9 @@ impl Check for StoragePath {
             .and_then(|line| line.split_whitespace().nth(4))
             .unwrap_or("?")
             .to_string();
-        let avail_inodes: u64 = df_inodes
-            .stdout
-            .lines()
-            .nth(1)
-            .and_then(|line| line.split_whitespace().next())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
+        let inode_stats = parse_inode_stats(&df_inodes.stdout);
+        let inode_accounting = inode_stats.is_some_and(|(total, _)| total > 0);
+        let avail_inodes = inode_stats.map(|(_, available)| available).unwrap_or(0);
 
         let avail_gb = avail_bytes as f64 / 1024.0 / 1024.0 / 1024.0;
         let details = json!({
@@ -182,6 +182,7 @@ impl Check for StoragePath {
             "availableGB": (avail_gb * 10.0).round() / 10.0,
             "percentUsed": pcent,
             "availableInodes": avail_inodes,
+            "inodeAccounting": inode_accounting,
         });
 
         let mut problems: Vec<String> = Vec::new();
@@ -204,7 +205,7 @@ impl Check for StoragePath {
                 self.min_free_bytes as f64 / 1024.0 / 1024.0 / 1024.0
             ));
         }
-        if avail_inodes < self.min_free_inodes {
+        if inode_accounting && avail_inodes < self.min_free_inodes {
             problems.push(format!(
                 "only {avail_inodes} inodes free (threshold: {})",
                 self.min_free_inodes
@@ -212,17 +213,48 @@ impl Check for StoragePath {
         }
 
         if problems.is_empty() {
+            let inode_summary = if inode_accounting {
+                format!("{avail_inodes} inodes free")
+            } else {
+                "inode accounting unavailable".to_string()
+            };
             CheckResult::pass(
                 self.name,
-                format!(
-                    "{} healthy ({:.1} GB free, {avail_inodes} inodes free)",
-                    p, avail_gb
-                ),
+                format!("{} healthy ({:.1} GB free, {inode_summary})", p, avail_gb),
             )
             .with_details(details)
         } else {
             CheckResult::warn(self.name, problems.join(" | ")).with_details(details)
         }
+    }
+}
+
+fn parse_inode_stats(stdout: &str) -> Option<(u64, u64)> {
+    stdout.lines().nth(1).and_then(|line| {
+        let mut fields = line.split_whitespace();
+        let total = fields.next()?.parse().ok()?;
+        let available = fields.next()?.parse().ok()?;
+        Some((total, available))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_inode_stats;
+
+    #[test]
+    fn parses_inode_columns_from_df_output() {
+        assert_eq!(
+            parse_inode_stats("Inodes IFree Mounted on\n1000 900 /data"),
+            Some((1000, 900))
+        );
+    }
+
+    #[test]
+    fn recognizes_filesystems_without_inode_accounting() {
+        let stats = parse_inode_stats("Inodes IFree Mounted on\n0 0 /data/scratch");
+        assert_eq!(stats, Some((0, 0)));
+        assert!(!stats.is_some_and(|(total, _)| total > 0));
     }
 }
 
