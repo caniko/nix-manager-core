@@ -227,10 +227,6 @@
           "rs-harbor",
           "crane"
         ],
-        "flake-utils": [
-          "rs-harbor",
-          "flake-utils"
-        ],
         "git-hooks": "git-hooks",
         "nixpkgs": [
           "rs-harbor",
