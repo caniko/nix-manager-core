@@ -94,15 +94,16 @@ pub fn decrypt_with_identities(secret: &Path, identities: &[PathBuf]) -> Result<
 /// Run `rage --decrypt --identity <identity> <secret>` and return the
 /// plaintext. stderr and stdin are inherited so FIDO2 touch prompts work
 /// transparently.
-fn try_decrypt_with_single_identity(secret: &Path, identity: &PathBuf) -> Result<String> {
+fn try_decrypt_with_single_identity(secret: &Path, identity: &Path) -> Result<String> {
     ui::step(format!(
         "decrypting {} with {}",
         secret.display(),
         identity.display(),
     ));
 
+    let identities = [identity.to_path_buf()];
     let out = Command::new("rage")
-        .args(rage_decrypt_args(secret, &[identity.clone()]))
+        .args(rage_decrypt_args(secret, &identities))
         .stdin(Stdio::inherit())
         .stderr(Stdio::inherit())
         .output()
@@ -327,7 +328,7 @@ mod tests {
         let secret = PathBuf::from("secret.age");
         let identity = PathBuf::from("age/master_nitro3c_identity.pub");
 
-        let args = rage_decrypt_args(&secret, &[identity.clone()]);
+        let args = rage_decrypt_args(&secret, std::slice::from_ref(&identity));
 
         assert_eq!(
             args,

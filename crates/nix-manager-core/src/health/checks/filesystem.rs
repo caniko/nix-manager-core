@@ -238,26 +238,6 @@ fn parse_inode_stats(stdout: &str) -> Option<(u64, u64)> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::parse_inode_stats;
-
-    #[test]
-    fn parses_inode_columns_from_df_output() {
-        assert_eq!(
-            parse_inode_stats("Inodes IFree Mounted on\n1000 900 /data"),
-            Some((1000, 900))
-        );
-    }
-
-    #[test]
-    fn recognizes_filesystems_without_inode_accounting() {
-        let stats = parse_inode_stats("Inodes IFree Mounted on\n0 0 /data/scratch");
-        assert_eq!(stats, Some((0, 0)));
-        assert!(!stats.is_some_and(|(total, _)| total > 0));
-    }
-}
-
 pub struct ZeroByteFileScan {
     pub name: &'static str,
     pub roots: Vec<PathBuf>,
@@ -347,5 +327,25 @@ fn walk_for_empty(dir: &Path, extensions: &[&str], out: &mut Vec<String>) {
         if len == 0 {
             out.push(p.display().to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_inode_stats;
+
+    #[test]
+    fn parses_inode_columns_from_df_output() {
+        assert_eq!(
+            parse_inode_stats("Inodes IFree Mounted on\n1000 900 /data"),
+            Some((1000, 900))
+        );
+    }
+
+    #[test]
+    fn recognizes_filesystems_without_inode_accounting() {
+        let stats = parse_inode_stats("Inodes IFree Mounted on\n0 0 /data/scratch");
+        assert_eq!(stats, Some((0, 0)));
+        assert!(!stats.is_some_and(|(total, _)| total > 0));
     }
 }
