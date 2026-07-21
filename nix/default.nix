@@ -17,4 +17,5 @@ in
   outputs
   // {
     lib.mkManagerOutputs = import ./scaffold.nix;
+    lib.mkDeclarativeManager = import ./declarative-manager.nix;
   }
