@@ -33,14 +33,11 @@ pub fn find_nix_files_containing(marker: &str) -> Result<Vec<PathBuf>> {
         }
     }
 
-    matching_nix_files(
-        walkdir::WalkDir::new(".")
-            .into_iter()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_type().is_file())
-            .map(|entry| entry.into_path()),
-        marker,
-    )
+    let paths = walkdir::WalkDir::new(".")
+        .into_iter()
+        .map(|entry| entry.map(|entry| entry.into_path()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    matching_nix_files(paths, marker)
 }
 
 fn matching_nix_files(
