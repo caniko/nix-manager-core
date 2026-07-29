@@ -1,5 +1,6 @@
 # Cargo checks reusing dependency artifacts from the package build.
 {
+  pkgs,
   craneLib,
   commonArgs,
   cargoArtifacts,
@@ -19,6 +20,7 @@
     commonArgs
     // {
       inherit cargoArtifacts;
+      nativeBuildInputs = [pkgs.rage];
       partitions = 1;
       partitionType = "count";
       cargoNextestExtraArgs = "--no-tests pass";

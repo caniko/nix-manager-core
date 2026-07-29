@@ -82,6 +82,7 @@
         treefmtEval = treefmt-nix.lib.evalModule pkgs treefmtConfig;
       in
         (checksConfig {
+          inherit pkgs;
           inherit
             (cargo)
             craneLib
