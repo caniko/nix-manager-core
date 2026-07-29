@@ -6,21 +6,49 @@ use crate::ui;
 
 pub const RESULTS_ROOT: &str = ".nix-results";
 
-/// Walk `.` for files with a `.nix` extension whose body contains `marker`.
-/// `marker` is matched as a literal substring (no regex). Unreadable files are
-/// silently skipped. Symlinks are followed by `walkdir`'s default.
+/// Find repository-owned `.nix` files whose body contains `marker`.
 ///
-/// Paths under a `store` component (e.g. `/nix/store/` or a committed `nix/store/`
-/// directory) are skipped — Nix store paths are immutable and we must never try
-/// to write back to them.
+/// Git supplies the file list so ignored worktrees, archives, and nested clones
+/// are not accidentally edited. Outside a Git checkout this falls back to walking
+/// the current directory.
 pub fn find_nix_files_containing(marker: &str) -> Result<Vec<PathBuf>> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    for entry in walkdir::WalkDir::new(".") {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
+    let git_files = Command::new("git")
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "*.nix",
+        ])
+        .output();
+    if let Ok(output) = git_files {
+        if output.status.success() {
+            return matching_nix_files(
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .map(PathBuf::from),
+                marker,
+            );
         }
-        let path = entry.path();
+    }
+
+    matching_nix_files(
+        walkdir::WalkDir::new(".")
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| entry.into_path()),
+        marker,
+    )
+}
+
+fn matching_nix_files(
+    paths: impl IntoIterator<Item = PathBuf>,
+    marker: &str,
+) -> Result<Vec<PathBuf>> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for path in paths {
         if path.extension().and_then(|s| s.to_str()) != Some("nix") {
             continue;
         }
@@ -30,12 +58,12 @@ pub fn find_nix_files_containing(marker: &str) -> Result<Vec<PathBuf>> {
         {
             continue;
         }
-        let raw = match std::fs::read_to_string(path) {
+        let raw = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(_) => continue,
         };
         if raw.contains(marker) {
-            out.push(path.to_path_buf());
+            out.push(path);
         }
     }
     Ok(out)
