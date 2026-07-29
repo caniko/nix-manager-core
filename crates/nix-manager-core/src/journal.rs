@@ -35,11 +35,12 @@ pub fn parse_journal_json(line: &str) -> Result<RawLogEntry> {
 ///
 /// `unit` filters to a specific systemd unit; pass `None` for all units.
 /// `since` is a journalctl time expression (e.g. "24h ago", "2024-01-01").
-pub fn collect_local(unit: Option<&str>, since: Option<&str>, lines: Option<usize>) -> Result<Vec<RawLogEntry>> {
-    let mut args = vec![
-        "--output=json".to_string(),
-        "--no-pager".to_string(),
-    ];
+pub fn collect_local(
+    unit: Option<&str>,
+    since: Option<&str>,
+    lines: Option<usize>,
+) -> Result<Vec<RawLogEntry>> {
+    let mut args = vec!["--output=json".to_string(), "--no-pager".to_string()];
     if let Some(u) = unit {
         args.push("-u".to_string());
         args.push(u.to_string());
@@ -60,7 +61,11 @@ pub fn collect_local(unit: Option<&str>, since: Option<&str>, lines: Option<usiz
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("journalctl failed (exit: {:?}): {}", output.status.code(), stderr.trim());
+        anyhow::bail!(
+            "journalctl failed (exit: {:?}): {}",
+            output.status.code(),
+            stderr.trim()
+        );
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -73,10 +78,7 @@ pub fn collect_local(unit: Option<&str>, since: Option<&str>, lines: Option<usiz
 
 /// Follow journal entries on a local host, printing each line.
 pub fn follow_local(unit: Option<&str>, lines: Option<usize>) -> Result<()> {
-    let mut args = vec![
-        "--output=json".to_string(),
-        "--follow".to_string(),
-    ];
+    let mut args = vec!["--output=json".to_string(), "--follow".to_string()];
     if let Some(u) = unit {
         args.push("-u".to_string());
         args.push(u.to_string());
