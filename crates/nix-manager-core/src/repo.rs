@@ -11,10 +11,11 @@
 use anyhow::{anyhow, Context, Result};
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Seek, Write};
 use std::os::fd::AsRawFd;
 use std::os::raw::c_int;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::ui;
 
@@ -83,7 +84,7 @@ fn acquire_lock_at(path: &Path, reason: &str) -> Result<RepoUpdateLockGuard> {
             .with_context(|| format!("create lock directory {}", parent.display()))?;
     }
 
-    let file = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -92,24 +93,70 @@ fn acquire_lock_at(path: &Path, reason: &str) -> Result<RepoUpdateLockGuard> {
         .with_context(|| format!("open repo update lock {}", path.display()))?;
 
     match try_lock_exclusive(&file) {
-        Ok(()) => Ok(RepoUpdateLockGuard { file }),
+        Ok(()) => {
+            write_lock_holder(&mut file, reason)?;
+            Ok(RepoUpdateLockGuard { file })
+        }
         Err(e) if e.kind() == ErrorKind::WouldBlock => {
+            let holder = std::fs::read_to_string(path).unwrap_or_else(|_| "unknown".to_string());
+            let timeout = env::var("CANIX_REPO_LOCK_TIMEOUT_SECS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .map(Duration::from_secs)
+                .unwrap_or(Duration::from_secs(300));
             ui::warn(format!(
-                "waiting for repo update lock ({reason}); another process is holding it"
+                "waiting up to {}s for repo update lock {} ({reason}); holder: {}",
+                timeout.as_secs(),
+                path.display(),
+                holder.trim()
             ));
-            lock_exclusive(&file).with_context(|| format!("lock {}", path.display()))?;
+            let started = Instant::now();
+            loop {
+                std::thread::sleep(Duration::from_millis(250));
+                match try_lock_exclusive(&file) {
+                    Ok(()) => break,
+                    Err(error)
+                        if error.kind() == ErrorKind::WouldBlock && started.elapsed() < timeout => {
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        return Err(anyhow!(
+                            "timed out after {}s waiting for repo update lock {}; holder: {}",
+                            timeout.as_secs(),
+                            path.display(),
+                            holder.trim()
+                        ));
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| format!("lock {}", path.display()))
+                    }
+                }
+            }
+            write_lock_holder(&mut file, reason)?;
             Ok(RepoUpdateLockGuard { file })
         }
         Err(e) => Err(e).with_context(|| format!("lock {}", path.display())),
     }
 }
 
-fn try_lock_exclusive(file: &File) -> std::io::Result<()> {
-    flock(file, LOCK_EX | LOCK_NB)
+fn write_lock_holder(file: &mut File, reason: &str) -> Result<()> {
+    file.set_len(0)?;
+    file.rewind()?;
+    let cmdline = std::fs::read_to_string(format!("/proc/{}/cmdline", std::process::id()))
+        .unwrap_or_default()
+        .replace('\0', " ");
+    writeln!(
+        file,
+        "pid={} reason={} cmdline={}",
+        std::process::id(),
+        reason,
+        cmdline.trim()
+    )?;
+    file.sync_data()?;
+    Ok(())
 }
 
-fn lock_exclusive(file: &File) -> std::io::Result<()> {
-    flock(file, LOCK_EX)
+fn try_lock_exclusive(file: &File) -> std::io::Result<()> {
+    flock(file, LOCK_EX | LOCK_NB)
 }
 
 fn unlock(file: &File) -> std::io::Result<()> {
