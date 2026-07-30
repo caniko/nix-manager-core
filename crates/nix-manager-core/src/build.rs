@@ -1,5 +1,7 @@
-use anyhow::{anyhow, bail, Result};
-use std::path::{Component, PathBuf};
+use anyhow::{anyhow, bail, Context, Result};
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::ui;
@@ -9,38 +11,43 @@ pub const RESULTS_ROOT: &str = ".nix-results";
 /// Find repository-owned `.nix` files whose body contains `marker`.
 ///
 /// Git supplies the file list so ignored worktrees, archives, and nested clones
-/// are not accidentally edited. Outside a Git checkout this falls back to walking
-/// the current directory.
+/// are not accidentally edited.
 pub fn find_nix_files_containing(marker: &str) -> Result<Vec<PathBuf>> {
-    let git_files = Command::new("git")
+    find_nix_files_containing_at(Path::new("."), marker)
+}
+
+fn find_nix_files_containing_at(root: &Path, marker: &str) -> Result<Vec<PathBuf>> {
+    let output = Command::new("git")
         .args([
             "ls-files",
+            "-z",
             "--cached",
             "--others",
             "--exclude-standard",
             "--",
             "*.nix",
         ])
-        .output();
-    if let Ok(output) = git_files {
-        if output.status.success() {
-            return matching_nix_files(
-                String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .map(PathBuf::from),
-                marker,
-            );
-        }
+        .current_dir(root)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .output()
+        .context("run git ls-files for Nix file discovery")?;
+    if !output.status.success() {
+        bail!(
+            "git ls-files failed while discovering Nix files: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
 
-    let paths = walkdir::WalkDir::new(".")
-        .into_iter()
-        .map(|entry| entry.map(|entry| entry.into_path()))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    matching_nix_files(paths, marker)
+    let paths = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| PathBuf::from(OsString::from_vec(path.to_vec())));
+    matching_nix_files(root, paths, marker)
 }
 
 fn matching_nix_files(
+    root: &Path,
     paths: impl IntoIterator<Item = PathBuf>,
     marker: &str,
 ) -> Result<Vec<PathBuf>> {
@@ -55,15 +62,68 @@ fn matching_nix_files(
         {
             continue;
         }
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
+        let absolute = root.join(&path);
+        if !std::fs::symlink_metadata(&absolute)
+            .with_context(|| format!("read metadata for {}", path.display()))?
+            .file_type()
+            .is_file()
+        {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&absolute)
+            .with_context(|| format!("read {}", path.display()))?;
         if raw.contains(marker) {
             out.push(path);
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn repository_scan_respects_git_scope_and_regular_files() {
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), ["init", "-q"]);
+        fs::write(repo.path().join(".gitignore"), "ignored/\n").unwrap();
+        fs::write(repo.path().join("tracked.nix"), "needle").unwrap();
+        fs::write(repo.path().join("untracked.nix"), "needle").unwrap();
+        fs::write(repo.path().join("unicodé.nix"), "needle").unwrap();
+        fs::create_dir(repo.path().join("ignored")).unwrap();
+        fs::write(repo.path().join("ignored/ignored.nix"), "needle").unwrap();
+        fs::create_dir(repo.path().join("nested")).unwrap();
+        git(&repo.path().join("nested"), ["init", "-q"]);
+        fs::write(repo.path().join("nested/nested.nix"), "needle").unwrap();
+        fs::write(repo.path().join("outside"), "needle").unwrap();
+        symlink("outside", repo.path().join("linked.nix")).unwrap();
+        git(
+            repo.path(),
+            ["add", ".gitignore", "tracked.nix", "linked.nix"],
+        );
+
+        let found = find_nix_files_containing_at(repo.path(), "needle").unwrap();
+        assert_eq!(
+            found,
+            [
+                PathBuf::from("unicodé.nix"),
+                PathBuf::from("untracked.nix"),
+                PathBuf::from("tracked.nix"),
+            ]
+        );
+    }
+
+    fn git<const N: usize>(root: &Path, args: [&str; N]) {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+    }
 }
 
 pub fn host_system() -> Result<&'static str> {
