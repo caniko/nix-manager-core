@@ -6,7 +6,7 @@
   srcDir ? ../.,
   extraRuntimePackages ? pkgs: [],
 }: let
-  toolchain = rs-harbor.lib.mkToolchain {inherit pkgs;};
+  toolchain = rs-harbor.lib.mkToolchain {inherit pkgs; toolchainProfile = "nightly";};
   inherit (toolchain) craneLib;
 
   src = craneLib.cleanCargoSource srcDir;
