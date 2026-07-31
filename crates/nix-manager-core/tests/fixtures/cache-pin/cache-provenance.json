@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "pin": "rocm",
+  "inputName": "nixpkgs-rocm",
+  "revision": {
+    "current": "current-revision",
+    "candidate": "candidate-revision",
+    "relation": "newer",
+    "policy": "allow"
+  },
+  "requiredPackages": [
+    {
+      "package": "blender",
+      "availability": "substitutable-closure",
+      "compatibility": "compatible",
+      "provenance": [
+        {
+          "source": "nix-evaluation",
+          "revision": "candidate-revision",
+          "storePath": "/nix/store/blender",
+          "target": "pkgsRocm.blender"
+        },
+        {
+          "source": "binary-cache",
+          "cacheUrl": "https://cache.nixos.org",
+          "revision": "candidate-revision",
+          "storePath": "/nix/store/blender"
+        },
+        {
+          "source": "closure-check",
+          "cacheUrl": "https://cache.nixos.org",
+          "revision": "candidate-revision",
+          "storePath": "/nix/store/blender"
+        }
+      ]
+    }
+  ],
+  "wishes": [
+    {
+      "package": "gimp",
+      "current": {
+        "package": "gimp",
+        "availability": "not-observed",
+        "compatibility": "compatible",
+        "provenance": []
+      },
+      "candidate": {
+        "package": "gimp",
+        "availability": "observed-on-hydra",
+        "compatibility": "compatible",
+        "provenance": [
+          {
+            "source": "hydra",
+            "revision": "candidate-revision"
+          }
+        ]
+      },
+      "decision": "continue"
+    }
+  ],
+  "status": "ready",
+  "diagnostics": []
+}
