@@ -1,0 +1,38 @@
+[
+  {
+    "schemaVersion": 1,
+    "pin": "rocm",
+    "inputName": "nixpkgs-rocm",
+    "revision": {
+      "current": "current-revision",
+      "candidate": "candidate-revision",
+      "relation": "newer",
+      "policy": "allow"
+    },
+    "requiredPackages": [],
+    "wishes": [],
+    "status": "ready",
+    "diagnostics": []
+  },
+  {
+    "schemaVersion": 1,
+    "pin": "cuda",
+    "inputName": "nixpkgs-cuda",
+    "revision": {
+      "current": "current-revision",
+      "candidate": "older-revision",
+      "relation": "older",
+      "policy": "downgrade-override-required"
+    },
+    "requiredPackages": [],
+    "wishes": [],
+    "status": "blocked",
+    "diagnostics": [
+      {
+        "code": "update.policy.downgrade",
+        "severity": "error",
+        "reason": "candidate revision is older than the current pin"
+      }
+    ]
+  }
+]
