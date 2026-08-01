@@ -6,7 +6,7 @@
 //!   `${XDG_DATA_HOME:-$HOME/.local/share}/forgejo-cli/keys.json`.
 //! - **GitHub**: delegates to the `gh` CLI.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use std::fs;
@@ -58,6 +58,7 @@ struct FjAuthStore {
 struct FjHostAuth {
     #[serde(rename = "type")]
     auth_type: String,
+    #[serde(default)]
     name: String,
     token: String,
     refresh_token: Option<String>,
@@ -98,8 +99,8 @@ fn fj_auth_login_command(host: &str) -> String {
     format!("fj -H {host} auth login")
 }
 
-fn fj_auth_add_key_command(host: &str, username: &str) -> String {
-    format!("fj -H {host} auth add-key {username}")
+fn fj_auth_add_token_command(host: &str) -> String {
+    format!("fj -H {host} auth add-token")
 }
 
 /// Resolve Codeberg/Forgejo authentication from the `fj` auth store.
@@ -111,7 +112,7 @@ pub fn codeberg_auth(host: &str) -> Result<CodebergAuth> {
              run `{}` or `{}` for {host}",
             path.display(),
             fj_auth_login_command(host),
-            fj_auth_add_key_command(host, "<user>")
+            fj_auth_add_token_command(host)
         )
     })?;
     let store: FjAuthStore = serde_json::from_str(&raw).map_err(|e| {
@@ -120,7 +121,7 @@ pub fn codeberg_auth(host: &str) -> Result<CodebergAuth> {
              run `{}` or `{}` for {host}",
             path.display(),
             fj_auth_login_command(host),
-            fj_auth_add_key_command(host, "<user>")
+            fj_auth_add_token_command(host)
         )
     })?;
     let auth = store.hosts.get(host).ok_or_else(|| {
@@ -129,7 +130,7 @@ pub fn codeberg_auth(host: &str) -> Result<CodebergAuth> {
                  run `{}` or `{}` for {host}",
             path.display(),
             fj_auth_login_command(host),
-            fj_auth_add_key_command(host, "<user>")
+            fj_auth_add_token_command(host)
         )
     })?;
     auth.clone().validate(host, &path)
@@ -155,16 +156,7 @@ impl FjHostAuth {
                  run `{}` or `{}` for {host}",
                 path.display(),
                 fj_auth_login_command(host),
-                fj_auth_add_key_command(host, "<user>")
-            ));
-        }
-        if username.is_empty() {
-            return Err(anyhow!(
-                "fj auth store {} has no username for {host}\n\
-                 run `{}` or `{}` for {host}",
-                path.display(),
-                fj_auth_login_command(host),
-                fj_auth_add_key_command(host, "<user>")
+                fj_auth_add_token_command(host)
             ));
         }
 
@@ -182,13 +174,13 @@ impl FjHostAuth {
                         "the fj store has no refresh token"
                     };
                     return Err(anyhow!(
-                        "fj OAuth token for {username}@{host} expired at {expires_at}\n\
+                        "fj OAuth token for {host} expired at {expires_at}\n\
                          fj auth store still has {host} as OAuth\n\
                          {refresh_state}\n\
                          run `{}` to refresh it, \
                          or run `{}` to store an application token for unattended secret sync",
                         fj_auth_login_command(host),
-                        fj_auth_add_key_command(host, &username)
+                        fj_auth_add_token_command(host)
                     ));
                 }
                 CodebergAuthKind::OAuth
@@ -203,7 +195,7 @@ impl FjHostAuth {
                      or refresh the OAuth entry with `{}`",
                     path.display(),
                     if other.is_empty() { "<empty>" } else { other },
-                    fj_auth_add_key_command(host, &username),
+                    fj_auth_add_token_command(host),
                     fj_auth_login_command(host)
                 ));
             }
@@ -229,7 +221,7 @@ fn parse_fj_expires_at(
              or `{}` for unattended secret sync",
             path.display(),
             fj_auth_login_command(host),
-            fj_auth_add_key_command(host, "<user>")
+            fj_auth_add_token_command(host)
         )
     })?;
     if fields.len() < 6 {
@@ -351,18 +343,13 @@ fn codeberg_client(host: &str, auth: &CodebergAuth) -> Result<forgejo_api::sync:
         .map_err(|e| anyhow!("failed to create forgejo client for {host}: {e}"))
 }
 
-fn require_authenticated_user(
-    host: &str,
-    api: &forgejo_api::sync::Forgejo,
-    auth: &CodebergAuth,
-) -> Result<String> {
+fn require_authenticated_user(host: &str, api: &forgejo_api::sync::Forgejo) -> Result<String> {
     let user = api.user_get_current().send().map_err(|e| {
         anyhow!(
-            "failed to authenticate to {host} as `{}`: {e}\n\
+            "failed to authenticate to {host}: {e}\n\
              run `{}` for unattended secret sync, \
              or refresh the OAuth entry with `{}`",
-            auth.username(),
-            fj_auth_add_key_command(host, auth.username()),
+            fj_auth_add_token_command(host),
             fj_auth_login_command(host)
         )
     })?;
@@ -371,7 +358,7 @@ fn require_authenticated_user(
         return Err(anyhow!(
             "authenticated user response from {host} did not include a login\n\
              run `{}` for unattended secret sync",
-            fj_auth_add_key_command(host, auth.username())
+            fj_auth_add_token_command(host)
         ));
     }
     Ok(login)
@@ -545,7 +532,7 @@ pub fn push_codeberg_user_secret(host: &str, name: &str, value: &str) -> Result<
     ));
     let auth = codeberg_auth(host)?;
     let api = codeberg_client(host, &auth)?;
-    let login = require_authenticated_user(host, &api, &auth)?;
+    let login = require_authenticated_user(host, &api)?;
     ui::step(format!("codeberg/{host}: authenticated as {login}"));
 
     api.update_user_secret(
@@ -572,7 +559,7 @@ pub fn push_codeberg_user_variable(host: &str, name: &str, value: &str) -> Resul
     ));
     let auth = codeberg_auth(host)?;
     let api = codeberg_client(host, &auth)?;
-    let login = require_authenticated_user(host, &api, &auth)?;
+    let login = require_authenticated_user(host, &api)?;
     ui::step(format!("codeberg/{host}: authenticated as {login}"));
 
     let update = api
@@ -655,18 +642,21 @@ mod tests {
     }
 
     fn write_fj_auth_store(data_home: &std::path::Path, host: &str, token: &str) {
-        write_fj_auth_store_with(data_home, host, "OAuth", "caniko", token);
+        write_fj_auth_store_with(data_home, host, "OAuth", Some("caniko"), token);
     }
 
     fn write_fj_auth_store_with(
         data_home: &std::path::Path,
         host: &str,
         auth_type: &str,
-        name: &str,
+        name: Option<&str>,
         token: &str,
     ) {
         let auth_dir = data_home.join("forgejo-cli");
         fs::create_dir_all(&auth_dir).unwrap();
+        let name = name
+            .map(|name| format!(r#""name": "{name}","#))
+            .unwrap_or_default();
         fs::write(
             auth_dir.join("keys.json"),
             format!(
@@ -674,7 +664,7 @@ mod tests {
                   "hosts": {{
                     "{host}": {{
                       "type": "{auth_type}",
-                      "name": "{name}",
+                      {name}
                       "token": "{token}",
                       "refresh_token": "unused",
                       "expires_at": [2999, 161, 6, 16, 47, 492946905, 0, 0, 0]
@@ -703,10 +693,29 @@ mod tests {
     }
 
     #[test]
-    fn codeberg_auth_parses_application_token_fj_entry() {
+    fn codeberg_auth_parses_fj_06_application_without_name() {
         with_clean_env(|| {
             let dir = tempfile::tempdir().unwrap();
-            write_fj_auth_store_with(dir.path(), "codeberg.org", "Token", "caniko", "app-token");
+            write_fj_auth_store_with(dir.path(), "codeberg.org", "Application", None, "app-token");
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+
+            let auth = codeberg_auth("codeberg.org").unwrap();
+            assert_eq!(auth.token(), "app-token");
+            assert_eq!(auth.kind, CodebergAuthKind::ApplicationToken);
+        });
+    }
+
+    #[test]
+    fn codeberg_auth_parses_fj_05_token_with_name() {
+        with_clean_env(|| {
+            let dir = tempfile::tempdir().unwrap();
+            write_fj_auth_store_with(
+                dir.path(),
+                "codeberg.org",
+                "Token",
+                Some("caniko"),
+                "app-token",
+            );
             std::env::set_var("XDG_DATA_HOME", dir.path());
 
             let auth = codeberg_auth("codeberg.org").unwrap();
@@ -757,7 +766,7 @@ mod tests {
             let err = result.unwrap_err().to_string();
             assert!(err.contains("no token for codeberg.org"));
             assert!(err.contains("fj -H codeberg.org auth login"));
-            assert!(err.contains("fj -H codeberg.org auth add-key <user>"));
+            assert!(err.contains("fj -H codeberg.org auth add-token"));
         });
     }
 
@@ -773,23 +782,7 @@ mod tests {
             let err = result.unwrap_err().to_string();
             assert!(err.contains("empty token for codeberg.org"));
             assert!(err.contains("fj -H codeberg.org auth login"));
-            assert!(err.contains("fj -H codeberg.org auth add-key <user>"));
-        });
-    }
-
-    #[test]
-    fn codeberg_auth_errors_when_username_empty() {
-        with_clean_env(|| {
-            let dir = tempfile::tempdir().unwrap();
-            write_fj_auth_store_with(dir.path(), "codeberg.org", "OAuth", "   ", "token");
-            std::env::set_var("XDG_DATA_HOME", dir.path());
-
-            let result = codeberg_auth("codeberg.org");
-            assert!(result.is_err());
-            let err = result.unwrap_err().to_string();
-            assert!(err.contains("no username for codeberg.org"));
-            assert!(err.contains("fj -H codeberg.org auth login"));
-            assert!(err.contains("fj -H codeberg.org auth add-key <user>"));
+            assert!(err.contains("fj -H codeberg.org auth add-token"));
         });
     }
 
@@ -797,14 +790,14 @@ mod tests {
     fn codeberg_auth_errors_when_type_unsupported() {
         with_clean_env(|| {
             let dir = tempfile::tempdir().unwrap();
-            write_fj_auth_store_with(dir.path(), "codeberg.org", "Session", "caniko", "token");
+            write_fj_auth_store_with(dir.path(), "codeberg.org", "Session", None, "token");
             std::env::set_var("XDG_DATA_HOME", dir.path());
 
             let result = codeberg_auth("codeberg.org");
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
             assert!(err.contains("unsupported auth type `session`"));
-            assert!(err.contains("fj -H codeberg.org auth add-key caniko"));
+            assert!(err.contains("fj -H codeberg.org auth add-token"));
             assert!(err.contains("fj -H codeberg.org auth login"));
         });
     }
@@ -837,11 +830,11 @@ mod tests {
             let result = codeberg_auth("codeberg.org");
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
-            assert!(err.contains("OAuth token for caniko@codeberg.org expired"));
+            assert!(err.contains("OAuth token for codeberg.org expired"));
             assert!(err.contains("fj auth store still has codeberg.org as OAuth"));
             assert!(err.contains("does not refresh OAuth tokens itself"));
             assert!(err.contains("fj -H codeberg.org auth login"));
-            assert!(err.contains("fj -H codeberg.org auth add-key caniko"));
+            assert!(err.contains("fj -H codeberg.org auth add-token"));
         });
     }
 
@@ -873,7 +866,7 @@ mod tests {
             let err = result.unwrap_err().to_string();
             assert!(err.contains("has no expires_at for codeberg.org"));
             assert!(err.contains("fj -H codeberg.org auth login"));
-            assert!(err.contains("fj -H codeberg.org auth add-key <user>"));
+            assert!(err.contains("fj -H codeberg.org auth add-token"));
         });
     }
 
