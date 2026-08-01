@@ -125,6 +125,24 @@
       }
     );
 
+    apps = forAllSystems (
+      system: let
+        pkgs = pkgsFor system;
+        atticAdapter = rs-harbor.lib.mkAdapter {
+          attic = {
+            endpoint = "https://attic.candee.baby";
+            cache = "canix";
+          };
+        };
+      in {
+        push-flake-inputs = rs-harbor.lib.mkAtticPush {
+          inherit pkgs;
+          adapter = atticAdapter;
+          flake = ".";
+        };
+      }
+    );
+
     formatter = forAllSystems (
       system: (treefmt-nix.lib.evalModule (pkgsFor system) treefmtConfig).config.build.wrapper
     );
@@ -140,7 +158,7 @@
         (base.${name}.${system} or {}) // (extras.${name}.${system} or {})
     );
 
-  systemAttrs = ["packages" "checks" "devShells" "formatter"];
+  systemAttrs = ["packages" "checks" "devShells" "apps" "formatter"];
 in
   (builtins.removeAttrs (base // extras) systemAttrs)
   // (builtins.listToAttrs (map (name: {
