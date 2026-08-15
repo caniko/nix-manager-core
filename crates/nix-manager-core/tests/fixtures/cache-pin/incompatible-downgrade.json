@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "pin": "cuda",
+  "inputName": "nixpkgs-cuda",
+  "revision": {
+    "current": "newer-revision",
+    "candidate": "older-revision",
+    "relation": "older",
+    "policy": "downgrade-override-required"
+  },
+  "requiredPackages": [
+    {
+      "package": "blender",
+      "availability": "substitutable-output",
+      "compatibility": "compatible",
+      "provenance": [
+        {
+          "source": "binary-cache",
+          "cacheUrl": "https://cache.nixos.org",
+          "revision": "older-revision",
+          "storePath": "/nix/store/blender"
+        }
+      ]
+    }
+  ],
+  "wishes": [
+    {
+      "package": "gimp",
+      "current": {
+        "package": "gimp",
+        "availability": "not-observed",
+        "compatibility": "compatible"
+      },
+      "candidate": {
+        "package": "gimp",
+        "availability": "promotion-eligible",
+        "compatibility": "incompatible",
+        "reason": "candidate consumer target does not match the requested package policy"
+      },
+      "decision": "incompatible",
+      "reason": "candidate wish evidence is incompatible"
+    }
+  ],
+  "status": "blocked",
+  "diagnostics": [
+    {
+      "code": "update.policy.downgrade",
+      "severity": "error",
+      "reason": "candidate revision is older than the current pin; an exact pin-scoped downgrade override is required"
+    },
+    {
+      "code": "update.policy.wish-incompatible",
+      "severity": "error",
+      "reason": "candidate wish evidence is incompatible"
+    }
+  ]
+}
