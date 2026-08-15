@@ -6,7 +6,7 @@ members = ["crates/nix-manager-core"]
 version = "0.3.0"
 edition = "2021"
 license = "MIT"
-repository = "https://codeberg.org/caniko/nix-manager-core"
+repository = "https://github.com/caniko/nix-manager-core"
 authors = ["caniko"]
 
 [workspace.dependencies]
@@ -25,6 +25,12 @@ walkdir = "2"
 
 [workspace.metadata.crane]
 name = "nix-manager-core"
+
+[workspace.metadata.harbor-ci]
+docs = true
+audit = true
+deny = true
+package = true
 
 [profile.release]
 lto = true

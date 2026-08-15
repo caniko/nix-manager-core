@@ -2,7 +2,7 @@
 
 <!-- simit:badges:start -->
 
-![CI](https://img.shields.io/badge/CI-managed-2088ff) [![Nix](https://img.shields.io/badge/Nix-managed-5277c3)](flake.nix) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/nix-manager-core)
+[![CI](https://img.shields.io/badge/CI-managed-2088ff)](.github/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-managed-5277c3)](flake.nix) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/nix-manager-core)
 
 <!-- simit:badges:end -->
 
@@ -58,7 +58,7 @@ from the scaffold for use in constructing domain outputs.
 ```nix
 {
   inputs = {
-    nix-manager-core.url = "git+https://codeberg.org/caniko/nix-manager-core";
+    nix-manager-core.url = "git+https://github.com/caniko/nix-manager-core";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
     treefmt-nix.url = "github:numtide/treefmt-nix";

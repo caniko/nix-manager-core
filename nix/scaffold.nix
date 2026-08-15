@@ -5,7 +5,7 @@
 #   { self, nixpkgs, rs-harbor, rust-overlay, treefmt-nix, git-hooks, ... }:
 #   let
 #     inherit (builtins) getFlake;
-#     nmc = getFlake "git+https://codeberg.org/caniko/nix-manager-core";
+#     nmc = getFlake "git+https://github.com/caniko/nix-manager-core";
 #   in
 #     nmc.lib.mkManagerOutputs {
 #       inherit self nixpkgs rs-harbor rust-overlay treefmt-nix git-hooks;
@@ -111,15 +111,15 @@
       in {
         default = cargo.craneLib.devShell {
           checks = self.checks.${system};
-          packages = with pkgs;
-            [
-              cargo-nextest
+           packages = [rs-harbor.packages.${system}.harbor-ci] ++ (with pkgs;
+             [
+               cargo-nextest
               pre-commit
               rage
               rust-analyzer
             ]
             ++ extraDevShellPackages pkgs
-            ++ pre-commit-check.enabledPackages;
+             ++ pre-commit-check.enabledPackages);
           shellHook = pre-commit-check.shellHook;
         };
       }
