@@ -1,5 +1,6 @@
 pub mod age;
 pub mod build;
+pub mod cache_pin;
 pub mod exec;
 pub mod forge;
 pub mod fs;
