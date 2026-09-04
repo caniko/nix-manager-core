@@ -36,7 +36,7 @@ outputs for a crane-based Rust project:
 {
   self,
   nixpkgs,
-  rs-harbor,
+  harbor-rs,
   rust-overlay,
   treefmt-nix,
   git-hooks,
@@ -67,7 +67,7 @@ from the scaffold for use in constructing domain outputs.
 
   outputs = inputs: inputs.nix-manager-core.lib.mkManagerOutputs {
     inherit (inputs) self nixpkgs rust-overlay treefmt-nix git-hooks;
-    rs-harbor = inputs.nix-manager-core.inputs.rs-harbor;
+    harbor-rs = inputs.nix-manager-core.inputs.harbor-rs;
     crateName = "my-manager";
   };
 }
