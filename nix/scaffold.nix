@@ -2,13 +2,13 @@
 #
 # Usage from a downstream flake's `nix/default.nix`:
 #
-#   { self, nixpkgs, rs-harbor, rust-overlay, treefmt-nix, git-hooks, ... }:
+#   { self, nixpkgs, harbor-rs, rust-overlay, treefmt-nix, git-hooks, ... }:
 #   let
 #     inherit (builtins) getFlake;
 #     nmc = getFlake "git+https://github.com/caniko/nix-manager-core";
 #   in
 #     nmc.lib.mkManagerOutputs {
-#       inherit self nixpkgs rs-harbor rust-overlay treefmt-nix git-hooks;
+#       inherit self nixpkgs harbor-rs rust-overlay treefmt-nix git-hooks;
 #       crateName = "my-manager";
 #       srcDir = ../.;
 #       extraDevShellPackages = pkgs: [ pkgs.bind ];
@@ -19,7 +19,7 @@
 {
   self,
   nixpkgs,
-  rs-harbor,
+  harbor-rs,
   rust-overlay,
   treefmt-nix,
   git-hooks,
@@ -58,7 +58,7 @@
   cargoFor = system:
     import ./package.nix {
       pkgs = pkgsFor system;
-      inherit rs-harbor crateName srcDir extraRuntimePackages;
+      inherit harbor-rs crateName srcDir extraRuntimePackages;
     };
 
   treefmtConfig = import ./treefmt.nix {inherit rustEdition;};
@@ -111,15 +111,17 @@
       in {
         default = cargo.craneLib.devShell {
           checks = self.checks.${system};
-           packages = [rs-harbor.packages.${system}.harbor-ci] ++ (with pkgs;
-             [
-               cargo-nextest
-              pre-commit
-              rage
-              rust-analyzer
-            ]
-            ++ extraDevShellPackages pkgs
-             ++ pre-commit-check.enabledPackages);
+          packages =
+            [harbor-rs.packages.${system}.harbor-ci]
+            ++ (with pkgs;
+              [
+                cargo-nextest
+                pre-commit
+                rage
+                rust-analyzer
+              ]
+              ++ extraDevShellPackages pkgs
+              ++ pre-commit-check.enabledPackages);
           shellHook = pre-commit-check.shellHook;
         };
       }

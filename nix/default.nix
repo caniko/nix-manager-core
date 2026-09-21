@@ -2,7 +2,7 @@
 {
   self,
   nixpkgs,
-  rs-harbor,
+  harbor-rs,
   rust-overlay,
   treefmt-nix,
   git-hooks,
@@ -10,7 +10,7 @@
 }: let
   mkManagerOutputs = import ./scaffold.nix;
   outputs = mkManagerOutputs {
-    inherit self nixpkgs rs-harbor rust-overlay treefmt-nix git-hooks;
+    inherit self nixpkgs harbor-rs rust-overlay treefmt-nix git-hooks;
     crateName = "nix-manager-core";
   };
 in
