@@ -79,53 +79,6 @@ fn matching_nix_files(
     Ok(out)
 }
 
-#[cfg(test)]
-mod discovery_tests {
-    use super::*;
-    use std::fs;
-    use std::os::unix::fs::symlink;
-
-    #[test]
-    fn repository_scan_respects_git_scope_and_regular_files() {
-        let repo = tempfile::tempdir().unwrap();
-        git(repo.path(), ["init", "-q"]);
-        fs::write(repo.path().join(".gitignore"), "ignored/\n").unwrap();
-        fs::write(repo.path().join("tracked.nix"), "needle").unwrap();
-        fs::write(repo.path().join("untracked.nix"), "needle").unwrap();
-        fs::write(repo.path().join("unicodé.nix"), "needle").unwrap();
-        fs::create_dir(repo.path().join("ignored")).unwrap();
-        fs::write(repo.path().join("ignored/ignored.nix"), "needle").unwrap();
-        fs::create_dir(repo.path().join("nested")).unwrap();
-        git(&repo.path().join("nested"), ["init", "-q"]);
-        fs::write(repo.path().join("nested/nested.nix"), "needle").unwrap();
-        fs::write(repo.path().join("outside"), "needle").unwrap();
-        symlink("outside", repo.path().join("linked.nix")).unwrap();
-        git(
-            repo.path(),
-            ["add", ".gitignore", "tracked.nix", "linked.nix"],
-        );
-
-        let found = find_nix_files_containing_at(repo.path(), "needle").unwrap();
-        assert_eq!(
-            found,
-            [
-                PathBuf::from("unicodé.nix"),
-                PathBuf::from("untracked.nix"),
-                PathBuf::from("tracked.nix"),
-            ]
-        );
-    }
-
-    fn git<const N: usize>(root: &Path, args: [&str; N]) {
-        assert!(Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .unwrap()
-            .success());
-    }
-}
-
 pub fn host_system() -> Result<&'static str> {
     let arch = Command::new("uname")
         .arg("-m")
@@ -260,4 +213,51 @@ pub fn clean_results() -> Result<usize> {
 
     ui::success(format!("Done — {removed} link(s) removed"));
     Ok(removed)
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn repository_scan_respects_git_scope_and_regular_files() {
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), ["init", "-q"]);
+        fs::write(repo.path().join(".gitignore"), "ignored/\n").unwrap();
+        fs::write(repo.path().join("tracked.nix"), "needle").unwrap();
+        fs::write(repo.path().join("untracked.nix"), "needle").unwrap();
+        fs::write(repo.path().join("unicodé.nix"), "needle").unwrap();
+        fs::create_dir(repo.path().join("ignored")).unwrap();
+        fs::write(repo.path().join("ignored/ignored.nix"), "needle").unwrap();
+        fs::create_dir(repo.path().join("nested")).unwrap();
+        git(&repo.path().join("nested"), ["init", "-q"]);
+        fs::write(repo.path().join("nested/nested.nix"), "needle").unwrap();
+        fs::write(repo.path().join("outside"), "needle").unwrap();
+        symlink("outside", repo.path().join("linked.nix")).unwrap();
+        git(
+            repo.path(),
+            ["add", ".gitignore", "tracked.nix", "linked.nix"],
+        );
+
+        let found = find_nix_files_containing_at(repo.path(), "needle").unwrap();
+        assert_eq!(
+            found,
+            [
+                PathBuf::from("unicodé.nix"),
+                PathBuf::from("untracked.nix"),
+                PathBuf::from("tracked.nix"),
+            ]
+        );
+    }
+
+    fn git<const N: usize>(root: &Path, args: [&str; N]) {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+    }
 }
