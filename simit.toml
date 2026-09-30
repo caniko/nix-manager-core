@@ -2,6 +2,6 @@
 runner = "ubuntu-24.04"
 provider = "actions"
 platform = "github"
-check_command = "harbor-ci full"
+required_gates = [{ id = "harbor-ci", run = "nix develop -c harbor-ci full" }]
 runtime = "nix"
 all_features = false
