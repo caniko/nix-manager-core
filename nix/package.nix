@@ -12,7 +12,14 @@
   };
   inherit (toolchain) craneLib;
 
-  src = craneLib.cleanCargoSource srcDir;
+  src = pkgs.lib.fileset.toSource {
+    root = srcDir;
+    fileset = pkgs.lib.fileset.unions [
+      (craneLib.fileset.commonCargoSources srcDir)
+      (pkgs.lib.fileset.maybeMissing (srcDir + "/tests/fixtures"))
+      (pkgs.lib.fileset.maybeMissing (srcDir + "/crates/${crateName}/tests/fixtures"))
+    ];
+  };
   runtimePackages = extraRuntimePackages pkgs;
 
   commonArgs = {
@@ -20,6 +27,8 @@
     strictDeps = true;
     pname = crateName;
     version = "0.1.0";
+    nativeBuildInputs = [pkgs.git pkgs.rage];
+    SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
   };
 
   cargoArtifacts = craneLib.buildDepsOnly commonArgs;

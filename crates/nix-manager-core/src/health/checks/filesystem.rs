@@ -346,6 +346,6 @@ mod tests {
     fn recognizes_filesystems_without_inode_accounting() {
         let stats = parse_inode_stats("Inodes IFree Mounted on\n0 0 /data/scratch");
         assert_eq!(stats, Some((0, 0)));
-        assert!(!stats.is_some_and(|(total, _)| total > 0));
+        assert!(stats.is_none_or(|(total, _)| total == 0));
     }
 }
