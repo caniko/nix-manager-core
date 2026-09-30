@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -20,9 +20,7 @@ pub fn atomic_write_0600(path: &Path, bytes: &[u8]) -> Result<()> {
     fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     let tmp = parent.join(format!(
         ".{}",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("tmp")
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("tmp")
     ));
     let _ = fs::remove_file(&tmp);
 

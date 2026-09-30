@@ -6,7 +6,7 @@
 //!   `${XDG_DATA_HOME:-$HOME/.local/share}/forgejo-cli/keys.json`.
 //! - **GitHub**: delegates to the `gh` CLI.
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use std::fs;
