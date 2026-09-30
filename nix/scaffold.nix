@@ -115,6 +115,7 @@
             [harbor-rs.packages.${system}.harbor-ci]
             ++ (with pkgs;
               [
+                cargo-deny
                 cargo-nextest
                 pre-commit
                 rage
