@@ -16,6 +16,8 @@
     root = srcDir;
     fileset = pkgs.lib.fileset.unions [
       (craneLib.fileset.commonCargoSources srcDir)
+      # Manager integration tests load Pkl examples and their local schemas.
+      (pkgs.lib.fileset.fileFilter (file: file.hasExt "pkl") srcDir)
       (pkgs.lib.fileset.maybeMissing (srcDir + "/tests/fixtures"))
       (pkgs.lib.fileset.maybeMissing (srcDir + "/crates/${crateName}/tests/fixtures"))
     ];
