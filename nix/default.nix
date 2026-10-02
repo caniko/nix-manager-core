@@ -12,6 +12,7 @@
   outputs = mkManagerOutputs {
     inherit self nixpkgs harbor-rs rust-overlay treefmt-nix git-hooks;
     crateName = "nix-manager-core";
+    extraDevShellPackages = pkgs: [pkgs.cargo-deny];
     extraOutputs = {
       lib,
       forAllSystems,
