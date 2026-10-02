@@ -2,7 +2,7 @@
 
 <!-- simit:badges:start -->
 
-[![CI](https://img.shields.io/badge/CI-managed-2088ff)](.github/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-managed-5277c3)](flake.nix) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/nix-manager-core)
+[![CI](https://img.shields.io/badge/CI-managed-2088ff)](.github/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-drift-5277c3)](flake.nix) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/nix-manager-core)
 
 <!-- simit:badges:end -->
 
@@ -88,6 +88,18 @@ from the scaffold for use in constructing domain outputs.
 ```
 
 ## Development
+
+### Progress helper migration
+
+`ui::spinner`, `ui::finish_spinner`, and `ui::fail_spinner` now use
+`indicatif::ProgressBar` from indicatif 0.18. Consumers that explicitly name this
+type or combine it with their own indicatif values must use indicatif 0.18 too.
+Calls that pass the inferred spinner value back to the core helpers need no
+source changes. This public type change requires the next minor crate release.
+The upgrade removes the unmaintained `number_prefix` dependency.
+
+`deny.toml` lists the permissive licenses accepted for the resolved dependencies.
+The required Harbor gate runs the license and advisory checks with `cargo deny`.
 
 ```bash
 cargo test --workspace
