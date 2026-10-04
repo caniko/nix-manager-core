@@ -1,10 +1,12 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::ui;
+
+pub mod frontier;
 
 pub const RESULTS_ROOT: &str = ".nix-results";
 
@@ -253,11 +255,13 @@ mod discovery_tests {
     }
 
     fn git<const N: usize>(root: &Path, args: [&str; N]) {
-        assert!(Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
     }
 }
