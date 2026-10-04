@@ -16,6 +16,8 @@ use std::process::{Command, Stdio};
 
 use crate::ui;
 
+pub mod gpg;
+
 const DEFAULT_CODEBERG_HOST: &str = "codeberg.org";
 
 /// Push a secret to a GitHub repository via `gh secret set`.

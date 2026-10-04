@@ -25,7 +25,21 @@ Manager-flake projects follow a two-repo pattern:
 | [`exec`]  | Shell execution (`run`, `capture`, `cap`, `replace`, `run_with_spinner`) |
 | [`repo`]  | Repository root discovery (walk up for a marker file)                    |
 | [`age`]   | age/rage decryption and shared identity resolution (flags → env → stubs) |
-| [`forge`] | Push Actions secrets to Codeberg/Forgejo and GitHub                      |
+| [`forge`] | Push Actions secrets and register account GPG keys on Forgejo/GitHub     |
+
+### Account GPG keys
+
+`forge::gpg` provides `list_forgejo_keys(host)`, `list_github_keys()`,
+`add_forgejo_key(host, login, public_armor)`, and
+`add_github_key(login, public_armor)`. Listing resolves the authenticated account
+and follows every page. Registration rechecks that account before uploading.
+Forgejo uses the existing `fj` auth store; GitHub uses `gh api` against
+`github.com`.
+
+The returned `GpgKey.public_key` contains base64-encoded public-key packets,
+not ASCII armor. Consumers must compare the full OpenPGP fingerprint before
+assuming an existing key is identical. Metadata includes email verification and
+Forgejo's separate proof-of-possession flag.
 
 ## Nix scaffold (`nix/scaffold.nix`)
 
@@ -74,6 +88,18 @@ from the scaffold for use in constructing domain outputs.
 ```
 
 ## Development
+
+### Progress helper migration
+
+`ui::spinner`, `ui::finish_spinner`, and `ui::fail_spinner` now use
+`indicatif::ProgressBar` from indicatif 0.18. Consumers that explicitly name this
+type or combine it with their own indicatif values must use indicatif 0.18 too.
+Calls that pass the inferred spinner value back to the core helpers need no
+source changes. This public type change requires the next minor crate release.
+The upgrade removes the unmaintained `number_prefix` dependency.
+
+`deny.toml` lists the permissive licenses accepted for the resolved dependencies.
+The required Harbor gate runs the license and advisory checks with `cargo deny`.
 
 ```bash
 cargo test --workspace

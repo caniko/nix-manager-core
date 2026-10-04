@@ -37,6 +37,8 @@
   # Rust edition rustfmt formats against; match the consumer workspace's
   # `workspace.package.edition`.
   rustEdition ? "2021",
+  # Optional consumer-owned treefmt module, shared by formatter and hooks.
+  treefmtModule ? null,
 } @ args: let
   inherit (nixpkgs) lib;
 
@@ -61,7 +63,10 @@
       inherit harbor-rs crateName srcDir extraRuntimePackages;
     };
 
-  treefmtConfig = import ./treefmt.nix {inherit rustEdition;};
+  treefmtConfig =
+    if treefmtModule != null
+    then treefmtModule
+    else import ./treefmt.nix {inherit rustEdition;};
   preCommitConfig = import ./pre-commit.nix;
   checksConfig = import ./checks.nix;
 
