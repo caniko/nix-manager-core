@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf};
@@ -255,13 +255,11 @@ mod discovery_tests {
     }
 
     fn git<const N: usize>(root: &Path, args: [&str; N]) {
-        assert!(
-            Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .status()
-                .unwrap()
-                .success()
-        );
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
     }
 }

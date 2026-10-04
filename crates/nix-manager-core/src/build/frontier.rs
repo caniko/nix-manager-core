@@ -7,7 +7,7 @@
 //! compilation; a disappearing substitute produces an error, never an expanded
 //! uncoordinated build.
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -409,53 +409,43 @@ mod tests {
                 name: "dev".into()
             }])
         );
-        assert!(
-            graph
-                .iter()
-                .filter(|n| n.output.derivation == path("dep.drv"))
-                .all(|n| n.restore_only)
-        );
+        assert!(graph
+            .iter()
+            .filter(|n| n.output.derivation == path("dep.drv"))
+            .all(|n| n.restore_only));
     }
 
     #[test]
     fn legacy_graph_and_unsupported_dynamic_or_floating_outputs() {
         let mut raw = json!({ path("one.drv"): {"system": "aarch64-linux", "outputs": {"out": {"path": path("one")}}, "inputDrvs": {}} });
-        assert!(
-            parse_graph(
-                &serde_json::to_vec(&raw).unwrap(),
-                &BTreeSet::new(),
-                "x86_64-linux"
-            )
-            .is_ok()
-        );
-        assert!(
-            parse_graph(
-                &serde_json::to_vec(&raw).unwrap(),
-                &BTreeSet::from([path("one.drv")]),
-                "x86_64-linux"
-            )
-            .is_err()
-        );
+        assert!(parse_graph(
+            &serde_json::to_vec(&raw).unwrap(),
+            &BTreeSet::new(),
+            "x86_64-linux"
+        )
+        .is_ok());
+        assert!(parse_graph(
+            &serde_json::to_vec(&raw).unwrap(),
+            &BTreeSet::from([path("one.drv")]),
+            "x86_64-linux"
+        )
+        .is_err());
         raw[&path("one.drv")]["outputs"]["out"] = json!({});
-        assert!(
-            parse_graph(
-                &serde_json::to_vec(&raw).unwrap(),
-                &BTreeSet::new(),
-                "x86_64-linux"
-            )
-            .is_err()
-        );
+        assert!(parse_graph(
+            &serde_json::to_vec(&raw).unwrap(),
+            &BTreeSet::new(),
+            "x86_64-linux"
+        )
+        .is_err());
         raw[&path("one.drv")]["outputs"]["out"] = json!({"path": path("one")});
         raw[&path("one.drv")]["inputDrvs"] =
             json!({path("one.drv"): {"outputs": ["out"], "dynamicOutputs": {"out": {}}}});
-        assert!(
-            parse_graph(
-                &serde_json::to_vec(&raw).unwrap(),
-                &BTreeSet::new(),
-                "x86_64-linux"
-            )
-            .is_err()
-        );
+        assert!(parse_graph(
+            &serde_json::to_vec(&raw).unwrap(),
+            &BTreeSet::new(),
+            "x86_64-linux"
+        )
+        .is_err());
     }
 
     #[test]
@@ -490,18 +480,15 @@ mod tests {
         let args = native.build_args(false, true);
         assert!(args.windows(3).any(|a| a == ["--option", "max-jobs", "0"]));
         assert!(args.windows(3).any(|a| a == ["--option", "builders", ""]));
-        assert!(
-            args.windows(3)
-                .any(|a| a == ["--option", "post-build-hook", ""])
-        );
+        assert!(args
+            .windows(3)
+            .any(|a| a == ["--option", "post-build-hook", ""]));
         assert!(!args.iter().any(|a| a == "--dry-run"));
-        assert!(
-            Output {
-                derivation: path("one.drv"),
-                name: "out; touch /tmp/pwn".into()
-            }
-            .installable()
-            .is_err()
-        );
+        assert!(Output {
+            derivation: path("one.drv"),
+            name: "out; touch /tmp/pwn".into()
+        }
+        .installable()
+        .is_err());
     }
 }
