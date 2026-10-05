@@ -513,6 +513,12 @@ mod tests {
     #[test]
     fn planning_uses_short_query_budgets_and_realization_uses_worker_budget() {
         use std::os::unix::fs::PermissionsExt;
+        let shell = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join("sh"))
+            .find(|path| path.is_file())
+            .expect("test environment must supply a POSIX shell")
+            .canonicalize()
+            .unwrap();
         let temp = tempfile::tempdir().unwrap();
         let timeout = temp.path().join("timeout");
         let nix = temp.path().join("nix");
@@ -530,12 +536,13 @@ mod tests {
         fs::write(
             &timeout,
             format!(
-                "#!/usr/bin/env sh\nprintf '%s\\n' \"$3\" >> '{}'\nshift 3\nexec \"$@\"\n",
+                "#!{}\nprintf '%s\\n' \"$3\" >> '{}'\nshift 3\nexec \"$@\"\n",
+                shell.display(),
                 log.display()
             ),
         )
         .unwrap();
-        fs::write(&nix, format!("#!/usr/bin/env sh\nif [ \"$1\" = derivation ]; then cat '{}'; exit; fi\nfor arg do if [ \"$arg\" = --dry-run ]; then printf 'this derivation will be built:\\n  {}\\n' >&2; exit; fi; done\nexit 7\n", raw.display(), drv)).unwrap();
+        fs::write(&nix, format!("#!{}\nif [ \"$1\" = derivation ]; then cat '{}'; exit; fi\nfor arg do if [ \"$arg\" = --dry-run ]; then printf 'this derivation will be built:\\n  {}\\n' >&2; exit; fi; done\nexit 7\n", shell.display(), raw.display(), drv)).unwrap();
         for path in [&timeout, &nix] {
             fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
         }
