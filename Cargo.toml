@@ -8,6 +8,7 @@ edition = "2021"
 license = "MIT"
 repository = "https://github.com/caniko/nix-manager-core"
 authors = ["caniko"]
+rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1"

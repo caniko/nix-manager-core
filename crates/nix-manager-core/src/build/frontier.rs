@@ -57,25 +57,36 @@ pub struct Native {
     pub nix: PathBuf,
     pub timeout: PathBuf,
     pub timeout_seconds: u64,
+    /// Store queries and each planning command have a shorter bounded budget.
+    #[serde(default = "default_query_timeout")]
+    pub query_timeout_seconds: u64,
     pub system: String,
     /// Direct GC root directory under the actual local store's gcroots tree.
     pub gc_roots: PathBuf,
     pub substitutes: bool,
 }
 
+fn default_query_timeout() -> u64 {
+    60
+}
+
 impl Native {
     fn command(&self, arguments: &[String]) -> Result<ProcessOutput> {
+        self.command_with_timeout(arguments, self.query_timeout_seconds)
+    }
+
+    fn command_with_timeout(&self, arguments: &[String], seconds: u64) -> Result<ProcessOutput> {
         ensure!(
             self.nix.is_absolute() && self.timeout.is_absolute(),
             "backend tools must be absolute paths"
         );
         ensure!(
-            (1..=86_400).contains(&self.timeout_seconds),
+            (1..=86_400).contains(&seconds),
             "backend timeout out of range"
         );
         Command::new(&self.timeout)
             .args(["--signal=TERM", "--kill-after=10s"])
-            .arg(self.timeout_seconds.to_string())
+            .arg(seconds.to_string())
             .arg(&self.nix)
             .args(arguments)
             .env("LC_ALL", "C")
@@ -179,7 +190,13 @@ impl Native {
     pub fn realise(&self, node: &Node) -> Result<()> {
         let mut args = self.build_args(false, node.restore_only);
         args.push(node.output.installable()?);
-        self.capture(&args)?;
+        let result = self.command_with_timeout(&args, self.timeout_seconds)?;
+        ensure!(
+            result.status.success(),
+            "Nix realization failed ({}): {}",
+            result.status,
+            String::from_utf8_lossy(&result.stderr)
+        );
         ensure!(
             self.valid(&node.path)?,
             "Nix returned without the requested output {}",
@@ -473,6 +490,7 @@ mod tests {
             nix: "/tools/nix".into(),
             timeout: "/tools/timeout".into(),
             timeout_seconds: 10,
+            query_timeout_seconds: 1,
             system: "x86_64-linux".into(),
             gc_roots: "/nix/var/nix/gcroots/user/train".into(),
             substitutes: true,
@@ -490,5 +508,53 @@ mod tests {
         }
         .installable()
         .is_err());
+    }
+
+    #[test]
+    fn planning_uses_short_query_budgets_and_realization_uses_worker_budget() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let timeout = temp.path().join("timeout");
+        let nix = temp.path().join("nix");
+        let log = temp.path().join("deadlines");
+        let raw = temp.path().join("graph.json");
+        let drv = path("one.drv");
+        fs::write(
+            &raw,
+            serde_json::to_vec(&json!({ &drv: {
+                "system": "x86_64-linux", "outputs": {"out": {"path": path("one")}}, "inputDrvs": {}
+            }}))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &timeout,
+            format!(
+                "#!/usr/bin/env sh\nprintf '%s\\n' \"$3\" >> '{}'\nshift 3\nexec \"$@\"\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        fs::write(&nix, format!("#!/usr/bin/env sh\nif [ \"$1\" = derivation ]; then cat '{}'; exit; fi\nfor arg do if [ \"$arg\" = --dry-run ]; then printf 'this derivation will be built:\\n  {}\\n' >&2; exit; fi; done\nexit 7\n", raw.display(), drv)).unwrap();
+        for path in [&timeout, &nix] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let native = Native {
+            nix,
+            timeout,
+            timeout_seconds: 900,
+            query_timeout_seconds: 2,
+            system: "x86_64-linux".into(),
+            gc_roots: "/nix/var/nix/gcroots/fixture".into(),
+            substitutes: true,
+        };
+        let graph = native
+            .plan(&[Output {
+                derivation: drv,
+                name: "out".into(),
+            }])
+            .unwrap();
+        assert!(native.realise(&graph[0]).is_err());
+        assert_eq!(fs::read_to_string(log).unwrap(), "2\n2\n900\n");
     }
 }

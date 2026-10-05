@@ -2,7 +2,7 @@
 
 <!-- simit:badges:start -->
 
-[![CI](https://img.shields.io/badge/CI-managed-2088ff)](.github/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-drift-5277c3)](flake.nix) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/nix-manager-core)
+[![CI](https://img.shields.io/badge/CI-managed-2088ff)](.github/workflows/ci.yaml) [![Nix](https://img.shields.io/badge/Nix-drift-5277c3)](flake.nix) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](https://docs.rs/nix-manager-core) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/nix-manager-core)
 
 <!-- simit:badges:end -->
 
