@@ -171,8 +171,18 @@ impl Native {
 
     pub fn valid(&self, path: &str) -> Result<bool> {
         store_path(path)?;
-        if !Path::new(path).exists() {
-            return Ok(false);
+        self.valid_entry(path)
+    }
+
+    fn valid_entry(&self, path: &str) -> Result<bool> {
+        // A symlink is itself an output, even when its target is absent. Only
+        // a missing entry is a cache miss; inspection errors must fail closed.
+        match fs::symlink_metadata(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspect output entry {path}"));
+            }
         }
         let result = self.command(&[
             "path-info".into(),
@@ -508,6 +518,86 @@ mod tests {
         }
         .installable()
         .is_err());
+    }
+
+    #[test]
+    fn dangling_output_requires_authoritative_store_evidence() {
+        use std::os::unix::fs::PermissionsExt;
+        let shell = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join("sh"))
+            .find(|path| path.is_file())
+            .expect("test environment must supply a POSIX shell")
+            .canonicalize()
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let timeout = temp.path().join("timeout");
+        let nix = temp.path().join("nix");
+        let queries = temp.path().join("queries");
+        let rejected = temp.path().join("rejected");
+        fs::write(
+            &timeout,
+            format!("#!{}\nshift 3\nexec \"$@\"\n", shell.display()),
+        )
+        .unwrap();
+        fs::write(
+            &nix,
+            format!(
+                "#!{}\nprintf '%s\\n' \"$1\" >> '{}'\n[ ! -e '{}' ]\n",
+                shell.display(),
+                queries.display(),
+                rejected.display()
+            ),
+        )
+        .unwrap();
+        for path in [&timeout, &nix] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let native = Native {
+            nix,
+            timeout,
+            timeout_seconds: 10,
+            query_timeout_seconds: 2,
+            system: "x86_64-linux".into(),
+            gc_roots: temp.path().join("roots"),
+            substitutes: true,
+        };
+        let output = temp.path().join("output");
+        symlink("intentionally-absent", &output).unwrap();
+        // Use a fixture entry for filesystem/query behavior; the public method
+        // separately enforces that callers supply an exact /nix/store path.
+        assert!(native.valid_entry(output.to_str().unwrap()).unwrap());
+        fs::write(rejected, "invalid in the store database").unwrap();
+        assert!(native.valid_entry(output.to_str().unwrap()).is_err());
+        assert_eq!(
+            fs::read_to_string(queries).unwrap(),
+            "path-info\npath-info\n"
+        );
+    }
+
+    #[test]
+    fn missing_output_is_distinct_from_filesystem_inspection_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let native = Native {
+            nix: temp.path().join("must-not-run"),
+            timeout: temp.path().join("must-not-run-either"),
+            timeout_seconds: 10,
+            query_timeout_seconds: 2,
+            system: "x86_64-linux".into(),
+            gc_roots: temp.path().join("roots"),
+            substitutes: true,
+        };
+        assert!(!native
+            .valid_entry(temp.path().join("missing").to_str().unwrap())
+            .unwrap());
+        let looping_parent = temp.path().join("loop");
+        symlink("loop", &looping_parent).unwrap();
+        let error = native
+            .valid_entry(looping_parent.join("output").to_str().unwrap())
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("inspect output entry"),
+            "{error:#}"
+        );
     }
 
     #[test]
