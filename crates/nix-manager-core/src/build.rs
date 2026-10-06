@@ -6,6 +6,8 @@ use std::process::{Command, Stdio};
 
 use crate::ui;
 
+pub mod frontier;
+
 pub const RESULTS_ROOT: &str = ".nix-results";
 
 /// Find repository-owned `.nix` files whose body contains `marker`.

@@ -12,7 +12,7 @@
   outputs = mkManagerOutputs {
     inherit self nixpkgs harbor-rs rust-overlay treefmt-nix git-hooks;
     crateName = "nix-manager-core";
-    extraDevShellPackages = pkgs: [pkgs.cargo-deny];
+    extraDevShellPackages = pkgs: [pkgs.cargo-deny pkgs.cargo-audit];
     extraOutputs = {
       lib,
       forAllSystems,
@@ -20,6 +20,18 @@
       pkgsFor,
       ...
     }: {
+      devShells = forAllSystems (system: let
+        pkgs = pkgsFor system;
+        compatibilityShell = version:
+          pkgs.mkShell {
+            packages = [pkgs.rust-bin.stable.${version}.default pkgs.git pkgs.rage];
+            RUSTFLAGS = "";
+            CARGO_ENCODED_RUSTFLAGS = "";
+          };
+      in {
+        msrv = compatibilityShell "1.88.0";
+        docs = compatibilityShell "1.96.1";
+      });
       checks = forAllSystems (system: let
         pkgs = pkgsFor system;
         cargo = cargoFor system;
