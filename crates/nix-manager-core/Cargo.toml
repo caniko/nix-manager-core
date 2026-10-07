@@ -6,6 +6,22 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/nix-manager-core"
+keywords = ["nix", "nixos", "deployment", "derivation", "manager"]
+categories = ["development-tools", "config"]
+include = [
+  "/src/**",
+  "/tests/**",
+  "/README.md",
+  "/LICENSE",
+  "/Cargo.toml",
+  "/Cargo.lock",
+]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [lib]
 name = "nix_manager_core"
