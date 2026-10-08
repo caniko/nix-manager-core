@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-08
+
+### Added
+
+- Recheck caller-owned remote admission immediately after prerequisite
+  validation, allowing refused goals to return to local placement.
+- Add cancellable exact-output workers with owned process-group cleanup before
+  returning, so callers can retain GC roots and placement leases through drain.
+
 ## [0.3.1] - 2026-10-08
 
 ### Added

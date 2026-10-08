@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/nix-manager-core"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/caniko/nix-manager-core"
@@ -26,6 +26,7 @@ forgejo-api = { version = "0.10", default-features = false, features = [
 ] }
 url = "2"
 walkdir = "2"
+libc = "0.2"
 
 [workspace.metadata.crane]
 name = "nix-manager-core"

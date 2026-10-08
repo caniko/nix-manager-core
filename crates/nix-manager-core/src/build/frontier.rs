@@ -16,6 +16,7 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output as ProcessOutput};
 
+mod execution;
 mod remote;
 
 /// Exact input-addressed output identity.

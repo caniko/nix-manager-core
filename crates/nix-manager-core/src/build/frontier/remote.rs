@@ -14,6 +14,28 @@ impl Native {
     /// machine must use a trusted `ssh-ng` endpoint, with remote delegation
     /// disabled by its deployment policy.
     pub fn realise_remote(&self, node: &Node, graph: &[Node], machine: &str) -> Result<()> {
+        self.realise_remote_if(
+            node,
+            graph,
+            machine,
+            || Ok(true),
+            &std::sync::atomic::AtomicBool::new(false),
+        )?;
+        Ok(())
+    }
+
+    /// Recheck caller-owned admission after validating and retaining all inputs,
+    /// immediately before remote submission. `false` means no remote worker was
+    /// started; the caller may place the goal locally. Errors after submission
+    /// remain failures and must not be interpreted as a placement refusal.
+    pub fn realise_remote_if(
+        &self,
+        node: &Node,
+        graph: &[Node],
+        machine: &str,
+        admit: impl FnOnce() -> Result<bool>,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<bool> {
         ensure!(
             !node.restore_only,
             "restore-only goals cannot compile remotely"
@@ -58,7 +80,10 @@ impl Native {
         )?;
         ensure_exact_build(&node.output.derivation, &builds)?;
         if self.valid(&node.path)? {
-            return Ok(());
+            return Ok(true);
+        }
+        if !admit()? {
+            return Ok(false);
         }
         let mut args = self.build_args(false, false);
         args.extend([
@@ -73,7 +98,7 @@ impl Native {
             "false".into(),
         ]);
         args.push(node.output.installable()?);
-        let result = self.command_with_timeout(&args, self.timeout_seconds)?;
+        let result = self.command_cancellable(&args, cancel)?;
         ensure!(
             result.status.success(),
             "remote realization failed ({}): {}",
@@ -85,7 +110,7 @@ impl Native {
             "remote realization returned without requested output {}",
             node.path
         );
-        Ok(())
+        Ok(true)
     }
 }
 
