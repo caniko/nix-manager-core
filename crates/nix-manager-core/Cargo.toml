@@ -36,7 +36,6 @@ indicatif.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-walkdir.workspace = true
 libc.workspace = true
 forgejo-api.workspace = true
 url.workspace = true

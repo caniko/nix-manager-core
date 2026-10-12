@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-12
+
+### Changed
+
+- Upgrade the Forgejo client to forgejo-api 0.11 and its reqwest 0.13 HTTP
+  dependency, retaining the synchronous client and Rustls TLS backend.
+- Remove the unused walkdir dependency.
+
+### Migration
+
+- `CodebergAuth::forgejo_auth` now returns forgejo-api 0.11's `Auth`. Callers
+  constructing Forgejo clients from this public type must upgrade their own
+  forgejo-api dependency to 0.11. The authentication and token lookup contracts
+  are unchanged.
+
 ## [0.3.2] - 2026-10-08
 
 ### Added
