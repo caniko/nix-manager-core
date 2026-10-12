@@ -39,9 +39,6 @@
           cargo.commonArgs
           // {
             inherit (cargo) cargoArtifacts;
-            # Reqwest's Rustls platform verifier loads roots when constructing
-            # a client, including HTTP-only fixtures in the isolated sandbox.
-            env.SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
             src = lib.cleanSourceWith {
               src = ../.;
               filter = path: type:

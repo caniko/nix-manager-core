@@ -4,7 +4,7 @@
   harbor-rs,
   crateName,
   srcDir ? ../.,
-  extraRuntimePackages ? pkgs: [],
+  extraRuntimePackages ? _pkgs: [],
 }: let
   toolchain = harbor-rs.lib.mkToolchain {
     inherit pkgs;
@@ -30,7 +30,9 @@
     pname = crateName;
     version = "0.1.0";
     nativeBuildInputs = [pkgs.git pkgs.rage];
-    SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+    # Reqwest's platform verifier loads roots during client construction,
+    # including HTTP-only fixtures. Keep one structured environment owner.
+    env.SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
   };
 
   cargoArtifacts = craneLib.buildDepsOnly commonArgs;
