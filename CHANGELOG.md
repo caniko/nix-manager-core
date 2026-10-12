@@ -2,7 +2,17 @@
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-10-12
+## [0.4.1] - 2026-10-12
+
+### Release Infrastructure
+
+- Build immutable crate archives explicitly before handing them to the
+  independently enrolled default-branch publisher. Retain signed-tag binding,
+  archive reconstruction, packaged compilation, and environment-only upload
+  credentials.
+- Preserve the failed, unpublished 0.4.0 tag. The changes below first ship in
+  0.4.1; 0.4.0 stopped before registry upload because its legacy workflow expected
+  an archive that Cargo's publication dry-run did not create.
 
 ### Changed
 
@@ -47,4 +57,4 @@
 
 Deployment integration and performance qualification remain consumer-owned gates.
 
-[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.3.0...HEAD
+[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.1...HEAD
