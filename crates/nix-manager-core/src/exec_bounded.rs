@@ -122,6 +122,16 @@ pub fn run_controlled(
     }
     let mut child = command.spawn().map_err(|error| failed(ErrorPhase::Spawn, error))?;
     loop {
+        // Check invocation controls before observing/reaping an exit. Otherwise
+        // an exit between polls can erase an already elapsed deadline or a
+        // caller cancellation, and cancellation can lose the group leader.
+        let cancelled = cancellation.load(Ordering::Acquire);
+        let timed_out = started.elapsed() >= limits.timeout;
+        if cancelled || timed_out {
+            let status = terminate(&mut child, limits.termination_grace)
+                .map_err(|error| failed(ErrorPhase::Termination, error))?;
+            return Ok(Outcome { status, timed_out, cancelled, elapsed: started.elapsed() });
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 return Ok(Outcome { status, timed_out: false, cancelled: false, elapsed: started.elapsed() });
@@ -133,13 +143,6 @@ pub fn run_controlled(
                 let _ = terminate(&mut child, limits.termination_grace);
                 return Err(failed(ErrorPhase::Observation, error));
             }
-        }
-        let cancelled = cancellation.load(Ordering::Acquire);
-        let timed_out = started.elapsed() >= limits.timeout;
-        if cancelled || timed_out {
-            let status = terminate(&mut child, limits.termination_grace)
-                .map_err(|error| failed(ErrorPhase::Termination, error))?;
-            return Ok(Outcome { status, timed_out, cancelled, elapsed: started.elapsed() });
         }
         thread::sleep(Duration::from_millis(10).min(limits.timeout.saturating_sub(started.elapsed())));
     }
