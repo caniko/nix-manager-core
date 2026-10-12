@@ -1,6 +1,6 @@
 [licenses]
-# Permissive licenses present in the resolved dependency graph. All other
-# licenses remain rejected; advisories, bans and sources keep their defaults.
+version = 2
+# Include the permissive BSD-2-Clause dependencies admitted by current trunk.
 allow = [
   "Apache-2.0",
   "BSD-2-Clause",
@@ -11,3 +11,12 @@ allow = [
   "Unicode-3.0",
   "Zlib",
 ]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
