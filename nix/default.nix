@@ -2,7 +2,7 @@
 {
   self,
   nixpkgs,
-  harbor-rs,
+  harbor,
   rust-overlay,
   treefmt-nix,
   git-hooks,
@@ -10,7 +10,7 @@
 }: let
   mkManagerOutputs = import ./scaffold.nix;
   outputs = mkManagerOutputs {
-    inherit self nixpkgs harbor-rs rust-overlay treefmt-nix git-hooks;
+    inherit self nixpkgs harbor rust-overlay treefmt-nix git-hooks;
     crateName = "nix-manager-core";
     extraDevShellPackages = pkgs: [pkgs.cargo-deny pkgs.cargo-audit];
     extraOutputs = {
@@ -49,6 +49,9 @@
             };
           };
       in {
+        scaffold-harbor-contract = import ./scaffold-harbor-contract.nix {
+          inherit self pkgs nixpkgs harbor rust-overlay treefmt-nix git-hooks;
+        };
         clippy = cargo.craneLib.cargoClippy (testArgs
           // {
             cargoClippyExtraArgs = "--all-targets -- --deny warnings";

@@ -50,7 +50,7 @@ outputs for a crane-based Rust project:
 {
   self,
   nixpkgs,
-  harbor-rs,
+  harbor,
   rust-overlay,
   treefmt-nix,
   git-hooks,
@@ -81,11 +81,17 @@ from the scaffold for use in constructing domain outputs.
 
   outputs = inputs: inputs.nix-manager-core.lib.mkManagerOutputs {
     inherit (inputs) self nixpkgs rust-overlay treefmt-nix git-hooks;
-    harbor-rs = inputs.nix-manager-core.inputs.harbor-rs;
+    harbor = inputs.nix-manager-core.inputs.harbor;
     crateName = "my-manager";
   };
 }
 ```
+
+The scaffold consumes the revision-qualified Harbor monorepo through `lib.rust`
+and `packages.<system>.rust-harbor-ci`. Existing callers may still pass the
+legacy `harbor-rs` argument; passing both arguments or neither is rejected.
+Intel macOS uses Harbor's qualified `nixpkgs-darwin` compatibility input; the
+other maintained systems use the consumer's `nixpkgs` input.
 
 ## Development
 

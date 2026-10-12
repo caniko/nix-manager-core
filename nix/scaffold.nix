@@ -2,13 +2,13 @@
 #
 # Usage from a downstream flake's `nix/default.nix`:
 #
-#   { self, nixpkgs, harbor-rs, rust-overlay, treefmt-nix, git-hooks, ... }:
+#   { self, nixpkgs, harbor, rust-overlay, treefmt-nix, git-hooks, ... }:
 #   let
 #     inherit (builtins) getFlake;
 #     nmc = getFlake "git+https://github.com/caniko/nix-manager-core";
 #   in
 #     nmc.lib.mkManagerOutputs {
-#       inherit self nixpkgs harbor-rs rust-overlay treefmt-nix git-hooks;
+#       inherit self nixpkgs harbor rust-overlay treefmt-nix git-hooks;
 #       crateName = "my-manager";
 #       srcDir = ../.;
 #       extraDevShellPackages = pkgs: [ pkgs.bind ];
@@ -19,7 +19,9 @@
 {
   self,
   nixpkgs,
-  harbor-rs,
+  harbor ? null,
+  # Compatibility for existing scaffold consumers; new callers pass harbor.
+  harbor-rs ? null,
   rust-overlay,
   treefmt-nix,
   git-hooks,
@@ -39,8 +41,18 @@
   rustEdition ? "2021",
   # Optional consumer-owned treefmt module, shared by formatter and hooks.
   treefmtModule ? null,
-} @ args: let
+} @ args:
+assert nixpkgs.lib.assertMsg ((harbor != null) != (harbor-rs != null))
+"mkManagerOutputs: pass exactly one of harbor or the legacy harbor-rs argument"; let
   inherit (nixpkgs) lib;
+  rustLib =
+    if harbor != null
+    then harbor.lib.rust
+    else harbor-rs.lib;
+  harborCiFor = system:
+    if harbor != null
+    then harbor.packages.${system}.rust-harbor-ci
+    else harbor-rs.packages.${system}.harbor-ci;
 
   systems = [
     "x86_64-linux"
@@ -52,7 +64,11 @@
   forAllSystems = f: lib.genAttrs systems f;
 
   pkgsFor = system:
-    import nixpkgs {
+    import (
+      if harbor != null && system == "x86_64-darwin"
+      then harbor.inputs.nixpkgs-darwin
+      else nixpkgs
+    ) {
       inherit system;
       overlays = [(import rust-overlay)];
     };
@@ -60,7 +76,7 @@
   cargoFor = system:
     import ./package.nix {
       pkgs = pkgsFor system;
-      inherit harbor-rs crateName srcDir extraRuntimePackages;
+      inherit rustLib crateName srcDir extraRuntimePackages;
     };
 
   treefmtConfig =
@@ -92,11 +108,12 @@
             craneLib
             commonArgs
             cargoArtifacts
-            src
             ;
         })
         // {
           formatting = treefmtEval.config.build.check self;
+          # Retain the public gate through the shared treefmt policy.
+          fmt = self.checks.${system}.formatting;
         }
     );
 
@@ -117,7 +134,7 @@
         default = cargo.craneLib.devShell {
           checks = self.checks.${system};
           packages =
-            [harbor-rs.packages.${system}.harbor-ci]
+            [(harborCiFor system) treefmtEval.config.build.wrapper]
             ++ (with pkgs;
               [
                 cargo-deny

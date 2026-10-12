@@ -1,12 +1,12 @@
-# crane build of a cargo workspace, using the harbor-rs toolchain.
+# crane build of a cargo workspace, using Harbor's Rust library.
 {
   pkgs,
-  harbor-rs,
+  rustLib,
   crateName,
   srcDir ? ../.,
   extraRuntimePackages ? pkgs: [],
 }: let
-  toolchain = harbor-rs.lib.mkToolchain {
+  toolchain = rustLib.mkToolchain {
     inherit pkgs;
     toolchainProfile = "nightly";
   };

@@ -3,7 +3,6 @@
   craneLib,
   commonArgs,
   cargoArtifacts,
-  src,
 }: {
   clippy = craneLib.cargoClippy (
     commonArgs
@@ -12,8 +11,6 @@
       cargoClippyExtraArgs = "--all-targets -- --deny warnings";
     }
   );
-
-  fmt = craneLib.cargoFmt {inherit src;};
 
   nextest = craneLib.cargoNextest (
     commonArgs
