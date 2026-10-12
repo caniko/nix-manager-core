@@ -12,8 +12,8 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1"
-console = "0.15"
-dialoguer = "0.11"
+console = "0.16"
+dialoguer = "0.12"
 hostname = "0.4"
 indicatif = "0.18"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

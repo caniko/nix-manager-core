@@ -9,6 +9,8 @@
 - Upgrade the Forgejo client to forgejo-api 0.11 and its reqwest 0.13 HTTP
   dependency, retaining the synchronous client and Rustls TLS backend.
 - Remove the unused walkdir dependency.
+- Align terminal styling and prompts on console 0.16 and dialoguer 0.12,
+  eliminating the old console and thiserror dependency generations.
 
 ### Migration
 
