@@ -39,6 +39,12 @@ owned process group and retains its leader identity until termination finishes.
 An unknown external effect still requires application-level reconciliation;
 the execution helper never retries a command.
 
+`exec_bounded::run_controlled` adds caller-owned `AtomicBool` cancellation and
+typed error phases. A preparation or spawn error proves that this invocation
+did not execute; observation and termination errors retain an unknown effect.
+`Outcome::success()` refuses both deadline and cancellation even when a handler
+exits zero. The convenience `run` API retains its `io::Result` contract.
+
 ## Development
 
 From the repository root, use the approved development environment:

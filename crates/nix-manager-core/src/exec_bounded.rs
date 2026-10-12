@@ -4,6 +4,7 @@ use std::{
     fs::File,
     io,
     process::{Child, Command, ExitStatus, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -29,13 +30,50 @@ impl Default for Limits {
 pub struct Outcome {
     pub status: ExitStatus,
     pub timed_out: bool,
+    pub cancelled: bool,
     pub elapsed: Duration,
 }
 
 impl Outcome {
     #[must_use]
     pub fn success(&self) -> bool {
-        !self.timed_out && self.status.success()
+        !self.timed_out && !self.cancelled && self.status.success()
+    }
+}
+
+/// Pre-spawn errors prove this invocation did not launch. Errors after spawn
+/// cannot establish whether external effects occurred.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorPhase {
+    Preparation,
+    Spawn,
+    Observation,
+    Termination,
+}
+
+#[derive(Debug)]
+pub struct RunError {
+    pub phase: ErrorPhase,
+    pub source: io::Error,
+    pub elapsed: Duration,
+}
+
+impl RunError {
+    #[must_use]
+    pub fn was_spawned(&self) -> bool {
+        matches!(self.phase, ErrorPhase::Observation | ErrorPhase::Termination)
+    }
+}
+
+impl std::fmt::Display for RunError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "bounded execution {:?}: {}", self.phase, self.source)
+    }
+}
+
+impl std::error::Error for RunError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
     }
 }
 
@@ -52,34 +90,56 @@ pub fn run(
     stdout: &File,
     stderr: &File,
 ) -> io::Result<Outcome> {
+    run_controlled(command, limits, stdout, stderr, &AtomicBool::new(false))
+        .map_err(|error| error.source)
+}
+
+/// Execute once with caller-owned cancellation and phase-attributable errors.
+/// Cancellation before spawn refuses execution. After spawn it uses the same
+/// owned process-group TERM/grace/KILL boundary as a deadline. Partial logs are
+/// retained, and callers must reconcile any possible external mutation.
+pub fn run_controlled(
+    command: &mut Command,
+    limits: Limits,
+    stdout: &File,
+    stderr: &File,
+    cancellation: &AtomicBool,
+) -> Result<Outcome, RunError> {
+    let started = Instant::now();
+    let failed = |phase, source| RunError { phase, source, elapsed: started.elapsed() };
     if limits.timeout.is_zero() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "deadline must be positive"));
+        return Err(failed(ErrorPhase::Preparation, io::Error::new(io::ErrorKind::InvalidInput, "deadline must be positive")));
     }
-    command.stdout(Stdio::from(stdout.try_clone()?));
-    command.stderr(Stdio::from(stderr.try_clone()?));
+    if cancellation.load(Ordering::Acquire) {
+        return Err(failed(ErrorPhase::Preparation, io::Error::new(io::ErrorKind::Interrupted, "cancelled before spawn")));
+    }
+    command.stdout(Stdio::from(stdout.try_clone().map_err(|error| failed(ErrorPhase::Preparation, error))?));
+    command.stderr(Stdio::from(stderr.try_clone().map_err(|error| failed(ErrorPhase::Preparation, error))?));
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let started = Instant::now();
-    let mut child = command.spawn()?;
+    let mut child = command.spawn().map_err(|error| failed(ErrorPhase::Spawn, error))?;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                return Ok(Outcome { status, timed_out: false, elapsed: started.elapsed() });
+                return Ok(Outcome { status, timed_out: false, cancelled: false, elapsed: started.elapsed() });
             }
             Ok(None) => {}
             Err(error) => {
                 // Preserve the original wait error after making a bounded effort
                 // to stop and reap the process owned by this invocation.
                 let _ = terminate(&mut child, limits.termination_grace);
-                return Err(error);
+                return Err(failed(ErrorPhase::Observation, error));
             }
         }
-        if started.elapsed() >= limits.timeout {
-            let status = terminate(&mut child, limits.termination_grace)?;
-            return Ok(Outcome { status, timed_out: true, elapsed: started.elapsed() });
+        let cancelled = cancellation.load(Ordering::Acquire);
+        let timed_out = started.elapsed() >= limits.timeout;
+        if cancelled || timed_out {
+            let status = terminate(&mut child, limits.termination_grace)
+                .map_err(|error| failed(ErrorPhase::Termination, error))?;
+            return Ok(Outcome { status, timed_out, cancelled, elapsed: started.elapsed() });
         }
         thread::sleep(Duration::from_millis(10).min(limits.timeout.saturating_sub(started.elapsed())));
     }
@@ -180,5 +240,55 @@ mod tests {
             termination_grace: Duration::ZERO,
         }, &stdout, &stderr).is_err());
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn cancelled_before_spawn_is_attributably_not_executed() {
+        let (directory, stdout, stderr) = logs();
+        let marker = directory.path().join("spawned");
+        let mut command = Command::new("touch");
+        command.arg(&marker);
+        let error = run_controlled(&mut command, Limits::default(), &stdout, &stderr, &AtomicBool::new(true)).unwrap_err();
+        assert_eq!(error.phase, ErrorPhase::Preparation);
+        assert!(!error.was_spawned());
+        assert_eq!(error.source.kind(), io::ErrorKind::Interrupted);
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn unavailable_program_is_attributably_not_executed() {
+        let (directory, stdout, stderr) = logs();
+        let mut command = Command::new(directory.path().join("absent-program"));
+        let error = run_controlled(&mut command, Limits::default(), &stdout, &stderr, &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(error.phase, ErrorPhase::Spawn);
+        assert!(!error.was_spawned());
+        assert_eq!(error.source.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn caller_cancellation_drains_descendants_and_preserves_partial_logs() {
+        let (directory, stdout, stderr) = logs();
+        let marker = directory.path().join("escaped");
+        let cancelled = AtomicBool::new(false);
+        let outcome = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(150));
+                cancelled.store(true, Ordering::Release);
+            });
+            let mut command = Command::new("sh");
+            command.args(["-c", "trap '' TERM; (sleep 0.8; touch \"$1\") & printf 'partial'; wait", "fixture"]);
+            command.arg(&marker);
+            run_controlled(&mut command, Limits {
+                timeout: Duration::from_secs(5),
+                termination_grace: Duration::from_millis(50),
+            }, &stdout, &stderr, &cancelled).unwrap()
+        });
+        assert!(outcome.cancelled);
+        assert!(!outcome.timed_out);
+        assert!(!outcome.success());
+        std::thread::sleep(Duration::from_secs(1));
+        assert!(!marker.exists());
+        assert_eq!(fs::read(directory.path().join("stdout")).unwrap(), b"partial");
     }
 }
