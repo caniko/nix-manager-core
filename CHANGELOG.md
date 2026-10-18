@@ -13,6 +13,12 @@
 - Drain owned process groups before returning on Linux, retaining the leader
   identity through cleanup and leaving unrelated invocations untouched.
 
+### Fixed
+
+- Refresh the locked `quinn-proto` and `rustls` dependencies to versions with
+  the published stream-buffer, protocol-panic and TLS advisory fixes required
+  by the release audit.
+
 ## [0.4.1] - 2026-10-12
 
 ### Release Infrastructure
