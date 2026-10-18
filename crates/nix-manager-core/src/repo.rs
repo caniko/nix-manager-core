@@ -8,7 +8,7 @@
 //! (lockfile bumps, git index writes) via an OS-level exclusive flock so that
 //! concurrent invocations do not corrupt shared state.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Seek, Write};
@@ -127,7 +127,7 @@ fn acquire_lock_at(path: &Path, reason: &str) -> Result<RepoUpdateLockGuard> {
                         ));
                     }
                     Err(error) => {
-                        return Err(error).with_context(|| format!("lock {}", path.display()))
+                        return Err(error).with_context(|| format!("lock {}", path.display()));
                     }
                 }
             }
@@ -253,7 +253,10 @@ mod tests {
         env::set_current_dir(tmp.path()).unwrap();
         // A task-local temp directory can have a legitimate flake ancestor.
         // Test the absent-marker contract rather than the host's directory layout.
-        let marker = format!("absent-marker-{}", tmp.path().file_name().unwrap().to_string_lossy());
+        let marker = format!(
+            "absent-marker-{}",
+            tmp.path().file_name().unwrap().to_string_lossy()
+        );
         let result = find_root(&marker);
         env::set_current_dir(&prev).unwrap();
         assert!(result.is_err());

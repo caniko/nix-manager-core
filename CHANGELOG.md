@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-18
+
+### Added
+
+- Expose deadline-bound, caller-cancellable execution of caller-configured
+  commands with byte-preserving, caller-owned stdout/stderr files and
+  phase-attributed errors. Preserve execution settings and distinguish
+  cancellation/timeouts from successful termination handlers.
+- Drain owned process groups before returning on Linux, retaining the leader
+  identity through cleanup and leaving unrelated invocations untouched.
+
 ## [0.4.1] - 2026-10-12
 
 ### Release Infrastructure
@@ -57,4 +68,4 @@
 
 Deployment integration and performance qualification remain consumer-owned gates.
 
-[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.1...HEAD
+[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.2...HEAD

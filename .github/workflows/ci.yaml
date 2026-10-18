@@ -52,12 +52,6 @@ jobs:
       - name: Check cargo-audit tool
         run: nix develop -c cargo-audit --version
 
-      - name: Check MSRV
-        run: |
-          set -eu
-          test "$(nix develop .#msrv -c rustc --version | cut -d ' ' -f 2)" = '1.88.0'
-          nix develop .#msrv -c cargo check --all-targets
-
       - name: Fetch RustSec advisory database
         run: |
           db="${CARGO_HOME:-$HOME/.cargo}/advisory-db"
@@ -69,6 +63,12 @@ jobs:
         run: |
           db="${CARGO_HOME:-$HOME/.cargo}/advisory-db"
           nix develop -c cargo audit --db "$db" --no-fetch --stale
+
+      - name: Check MSRV
+        run: |
+          set -eu
+          test "$(nix develop .#msrv -c rustc --version | cut -d ' ' -f 2)" = '1.88.0'
+          nix develop .#msrv -c cargo check --all-targets
 
       - name: Build docs
         run: nix develop .#docs -c cargo doc --no-deps --all-features
