@@ -127,7 +127,7 @@ fn acquire_lock_at(path: &Path, reason: &str) -> Result<RepoUpdateLockGuard> {
                         ));
                     }
                     Err(error) => {
-                        return Err(error).with_context(|| format!("lock {}", path.display()))
+                        return Err(error).with_context(|| format!("lock {}", path.display()));
                     }
                 }
             }
@@ -251,7 +251,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let prev = env::current_dir().unwrap();
         env::set_current_dir(tmp.path()).unwrap();
-        let result = find_root("flake.nix");
+        // A task-local temp directory can have a legitimate flake ancestor.
+        // Test the absent-marker contract rather than the host's directory layout.
+        let marker = format!(
+            "absent-marker-{}",
+            tmp.path().file_name().unwrap().to_string_lossy()
+        );
+        let result = find_root(&marker);
         env::set_current_dir(&prev).unwrap();
         assert!(result.is_err());
     }

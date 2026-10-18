@@ -2,6 +2,7 @@ pub mod age;
 pub mod build;
 pub mod cache_pin;
 pub mod exec;
+pub mod exec_bounded;
 pub mod forge;
 pub mod fs;
 pub mod health;

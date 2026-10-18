@@ -25,6 +25,26 @@ The library also provides repository, age, forge, health, progress, execution,
 reconciliation, and source-management support. See the repository README for
 module details and the Nix scaffold, which is distributed separately from Cargo.
 
+## Bounded process execution
+
+`exec_bounded::run` executes a caller-configured `std::process::Command` with a
+positive deadline and a termination grace period. Stdout and stderr stream as
+unmodified bytes to caller-owned files, so large output does not fill pipes or
+require an in-memory buffer. The library never prints arguments, environment
+values or log contents. Callers own credential delivery and log retention.
+
+The returned outcome distinguishes a deadline from a normal exit, including a
+termination handler that exits successfully. Unix cancellation targets the new
+owned process group and retains its leader identity until termination finishes.
+An unknown external effect still requires application-level reconciliation;
+the execution helper never retries a command.
+
+`exec_bounded::run_controlled` adds caller-owned `AtomicBool` cancellation and
+typed error phases. A preparation or spawn error proves that this invocation
+did not execute; observation and termination errors retain an unknown effect.
+`Outcome::success()` refuses both deadline and cancellation even when a handler
+exits zero. The convenience `run` API retains its `io::Result` contract.
+
 ## Development
 
 From the repository root, use the approved development environment:
