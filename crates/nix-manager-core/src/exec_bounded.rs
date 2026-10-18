@@ -346,18 +346,16 @@ mod tests {
         let marker = directory.path().join("spawned");
         let mut command = Command::new("touch");
         command.arg(&marker);
-        assert!(
-            run(
-                &mut command,
-                Limits {
-                    timeout: Duration::ZERO,
-                    termination_grace: Duration::ZERO,
-                },
-                &stdout,
-                &stderr
-            )
-            .is_err()
-        );
+        assert!(run(
+            &mut command,
+            Limits {
+                timeout: Duration::ZERO,
+                termination_grace: Duration::ZERO,
+            },
+            &stdout,
+            &stderr
+        )
+        .is_err());
         assert!(!marker.exists());
     }
 
