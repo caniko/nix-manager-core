@@ -2,13 +2,20 @@
 {
   self,
   nixpkgs,
+  nixpkgs-darwin,
   harbor-rs,
   rust-overlay,
   treefmt-nix,
   git-hooks,
   ...
 }: let
-  mkManagerOutputs = import ./scaffold.nix;
+  mkManagerOutputs = args: import ./scaffold.nix ({inherit nixpkgs-darwin;} // args);
+  # Keep shell evaluation independent of the checks that exercise it.
+  scaffoldOnly = mkManagerOutputs {
+    self = self // scaffoldOnly;
+    inherit nixpkgs harbor-rs rust-overlay treefmt-nix git-hooks;
+    crateName = "nix-manager-core";
+  };
   outputs = mkManagerOutputs {
     inherit self nixpkgs harbor-rs rust-overlay treefmt-nix git-hooks;
     crateName = "nix-manager-core";
@@ -49,6 +56,11 @@
             };
           };
       in {
+        scaffold-platform-shells = assert builtins.deepSeq (builtins.attrValues (forAllSystems (
+          target: scaffoldOnly.devShells.${target}.default.drvPath
+        )))
+        true;
+          pkgs.runCommand "scaffold-platform-shells" {} "touch $out";
         clippy = cargo.craneLib.cargoClippy (testArgs
           // {
             cargoClippyExtraArgs = "--all-targets -- --deny warnings";
@@ -66,6 +78,6 @@
 in
   outputs
   // {
-    lib.mkManagerOutputs = import ./scaffold.nix;
+    lib.mkManagerOutputs = mkManagerOutputs;
     lib.mkDeclarativeManager = import ./declarative-manager.nix;
   }
