@@ -64,6 +64,11 @@ systems (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`,
 `aarch64-darwin`). Use `extraOutputs` to merge domain-specific
 outputs (e.g. `nixosModules`, `apps`, `lib.*` helpers).
 
+The public helper supplies its pinned, maintained Nixpkgs 26.05 input for
+Intel macOS; override it with the optional `nixpkgs-darwin` argument.
+Other systems retain the caller's `nixpkgs`. The pinned Harbor CI helper is
+included only in Linux shells; all four platform shells remain available.
+
 The `extraOutputs` function receives `{ lib, forAllSystems, pkgsFor, cargoFor }`
 from the scaffold for use in constructing domain outputs.
 

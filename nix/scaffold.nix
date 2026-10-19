@@ -19,6 +19,7 @@
 {
   self,
   nixpkgs,
+  nixpkgs-darwin ? nixpkgs,
   harbor-rs,
   rust-overlay,
   treefmt-nix,
@@ -52,7 +53,11 @@
   forAllSystems = f: lib.genAttrs systems f;
 
   pkgsFor = system:
-    import nixpkgs {
+    import (
+      if system == "x86_64-darwin"
+      then nixpkgs-darwin
+      else nixpkgs
+    ) {
       inherit system;
       overlays = [(import rust-overlay)];
     };
@@ -105,19 +110,26 @@
         pkgs = pkgsFor system;
         cargo = cargoFor system;
         treefmtEval = treefmt-nix.lib.evalModule pkgs treefmtConfig;
-        pre-commit-check = git-hooks.lib.${system}.run {
-          src = srcDir;
-          install.enable = false;
-          hooks = preCommitConfig {
-            inherit pkgs;
-            treefmtWrapper = treefmtEval.config.build.wrapper;
+        # Hook tools must use the same platform source as the shell packages.
+        pre-commit-check =
+          (import (git-hooks + "/nix") {
+            nixpkgs = pkgs.path;
+            inherit system;
+            isFlakes = true;
+          }).run {
+            src = srcDir;
+            install.enable = false;
+            hooks = preCommitConfig {
+              inherit pkgs;
+              treefmtWrapper = treefmtEval.config.build.wrapper;
+            };
           };
-        };
       in {
         default = cargo.craneLib.devShell {
           checks = self.checks.${system};
           packages =
-            [harbor-rs.packages.${system}.harbor-ci]
+            # The pinned Harbor CI helper is published for Linux only.
+            lib.optionals pkgs.stdenv.hostPlatform.isLinux [harbor-rs.packages.${system}.harbor-ci]
             ++ (with pkgs;
               [
                 cargo-deny
