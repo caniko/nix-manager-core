@@ -26,6 +26,8 @@ forgejo-api = { version = "0.11.1", default-features = false, features = [
 ] }
 url = "2"
 libc = "0.2"
+age = { version = "0.11.5", default-features = false, features = ["plugin"] }
+age-core = { version = "0.11", features = ["plugin"] }
 
 [workspace.metadata.crane]
 name = "nix-manager-core"

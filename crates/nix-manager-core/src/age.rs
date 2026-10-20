@@ -17,8 +17,15 @@
 //! colon-separated environment variable, then the store's master identity
 //! stubs under `<root>/age/`.
 
+use age::secrecy::ExposeSecret;
+use age_core::format::{FileKey, Stanza, FILE_KEY_BYTES};
+use age_core::plugin::{Connection, IDENTITY_V1};
 use anyhow::{anyhow, bail, Context, Result};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -26,13 +33,22 @@ use crate::ui;
 
 /// A run-scoped age decryption session.
 ///
-/// This currently preserves resolved identity files for sync-run caching.
-/// Separate `age-plugin-fido2-hmac` identity stubs cannot be materialized via
-/// `age-plugin-fido2-hmac -m`; that flag emits the dataless magic identity, so
-/// sync runs must keep passing the original identity paths to `rage`.
-#[derive(Debug)]
+/// [`DecryptSession::prefetch`] decrypts many files through one plugin
+/// session per identity. `age-plugin-fido2-hmac` derives its X25519 key once
+/// per plugin process, so a sync run needs one hardware touch instead of one
+/// per secret. Files the prefetch could not decrypt fall back to `rage`.
 pub struct DecryptSession {
     identities: Vec<PathBuf>,
+    plaintexts: RefCell<HashMap<PathBuf, String>>,
+}
+
+impl fmt::Debug for DecryptSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DecryptSession")
+            .field("identities", &self.identities)
+            .field("prefetched", &self.plaintexts.borrow().len())
+            .finish()
+    }
 }
 
 impl DecryptSession {
@@ -42,17 +58,225 @@ impl DecryptSession {
         }
         Ok(Self {
             identities: identities.to_vec(),
+            plaintexts: RefCell::default(),
         })
     }
 
     pub fn identities(&self) -> &[PathBuf] {
         &self.identities
     }
+
+    /// Decrypt `secrets` up front with one plugin session per plugin identity.
+    ///
+    /// Identities are tried in order, one at a time, so separate FIDO2 stubs
+    /// never share a plugin invocation. A failed session moves on to the next
+    /// identity; whatever stays undecrypted is retried per file later.
+    pub fn prefetch(&self, secrets: &[PathBuf]) -> Result<()> {
+        self.prefetch_with_path(secrets, std::env::var_os("PATH").as_deref())
+    }
+
+    fn prefetch_with_path(
+        &self,
+        secrets: &[PathBuf],
+        path: Option<&std::ffi::OsStr>,
+    ) -> Result<()> {
+        let mut pending: Vec<&PathBuf> = secrets
+            .iter()
+            .filter(|secret| !self.plaintexts.borrow().contains_key(*secret))
+            .collect();
+        pending.sort();
+        pending.dedup();
+        for identity in &self.identities {
+            if pending.is_empty() {
+                break;
+            }
+            let Some(plugin) = plugin_identity(identity)? else {
+                continue;
+            };
+            ui::step(format!(
+                "decrypting {} secret(s) with {}",
+                pending.len(),
+                identity.display(),
+            ));
+            let name = format!("age-plugin-{}", plugin.plugin());
+            let Some(binary) = find_on_path(&name, path) else {
+                ui::warn(format!("{name} is not on PATH"));
+                continue;
+            };
+            let values = match decrypt_batch(&binary, &plugin.to_string(), &pending) {
+                Ok(values) => values,
+                Err(e) => {
+                    ui::warn(format!("{}: {e:#}", identity.display()));
+                    continue;
+                }
+            };
+            let mut plaintexts = self.plaintexts.borrow_mut();
+            for (secret, value) in pending.iter().zip(values) {
+                if let Some(value) = value {
+                    plaintexts.insert((*secret).clone(), value);
+                }
+            }
+            pending.retain(|secret| !plaintexts.contains_key(*secret));
+        }
+        Ok(())
+    }
 }
 
-/// Decrypt with a run-scoped session.
+/// Decrypt with a run-scoped session, using a prefetched plaintext when one exists.
 pub fn decrypt_with_session(secret: &Path, session: &DecryptSession) -> Result<String> {
+    if let Some(value) = session.plaintexts.borrow().get(secret) {
+        return Ok(value.clone());
+    }
     decrypt_with_identities(secret, session.identities())
+}
+
+/// The first `binary` file in the `PATH`-style list `path`. The plugin
+/// connection canonicalizes its argument, so a bare name must be resolved here.
+fn find_on_path(binary: &str, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    std::env::split_paths(path?)
+        .map(|dir| dir.join(binary))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The single `AGE-PLUGIN-` identity in `path`, or `None` for files that
+/// hold native keys or several plugin identities.
+fn plugin_identity(path: &Path) -> Result<Option<age::plugin::Identity>> {
+    let contents =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut lines = contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'));
+    match (lines.next(), lines.next()) {
+        (Some(line), None) if line.starts_with("AGE-PLUGIN-") => Ok(line.parse().ok()),
+        _ => Ok(None),
+    }
+}
+
+/// Unwrap the file keys of `secrets` in one `identity-v1` plugin session and
+/// decrypt each payload. `None` marks a file the plugin did not unwrap.
+fn decrypt_batch(
+    binary: &Path,
+    identity: &str,
+    secrets: &[&PathBuf],
+) -> Result<Vec<Option<String>>> {
+    let ciphertexts = secrets
+        .iter()
+        .map(|secret| {
+            std::fs::read(secret).with_context(|| format!("reading {}", secret.display()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let stanzas: Vec<Vec<Stanza>> = ciphertexts.iter().map(|c| header_stanzas(c)).collect();
+    let mut file_keys: Vec<Option<FileKey>> = secrets.iter().map(|_| None).collect();
+    let mut conn = Connection::open(binary, IDENTITY_V1)
+        .with_context(|| format!("starting {}", binary.display()))?;
+    conn.unidir_send(|mut phase| {
+        phase.send("add-identity", &[identity], &[])?;
+        for (index, file) in stanzas.iter().enumerate() {
+            for stanza in file {
+                phase.send_stanza("recipient-stanza", &[&index.to_string()], stanza)?;
+            }
+        }
+        Ok(())
+    })?;
+    conn.bidir_receive(
+        &[
+            "msg",
+            "confirm",
+            "request-public",
+            "request-secret",
+            "file-key",
+            "error",
+        ],
+        |command, reply| match command.tag.as_str() {
+            "msg" => {
+                eprintln!("{}", String::from_utf8_lossy(&command.body));
+                reply.ok(None)
+            }
+            "request-secret" => {
+                match dialoguer::Password::new()
+                    .with_prompt(String::from_utf8_lossy(&command.body))
+                    .interact()
+                {
+                    Ok(secret) => reply.ok(Some(secret.as_bytes())),
+                    Err(_) => reply.fail(),
+                }
+            }
+            "file-key" => {
+                let index = command.args.first().and_then(|i| i.parse::<usize>().ok());
+                match index.and_then(|i| file_keys.get_mut(i)) {
+                    Some(slot) if slot.is_none() && command.body.len() == FILE_KEY_BYTES => {
+                        *slot = Some(FileKey::init_with_mut(|key| {
+                            key.copy_from_slice(&command.body)
+                        }));
+                        reply.ok(None)
+                    }
+                    _ => reply.fail(),
+                }
+            }
+            "error" => reply.ok(None),
+            _ => reply.fail(),
+        },
+    )?;
+
+    Ok(ciphertexts
+        .iter()
+        .zip(file_keys)
+        .map(|(ciphertext, file_key)| {
+            file_key.and_then(|key| decrypt_payload(ciphertext, key).ok())
+        })
+        .collect())
+}
+
+/// The recipient stanzas in an age header, captured by an identity that
+/// records them and declines to unwrap.
+fn header_stanzas(ciphertext: &[u8]) -> Vec<Stanza> {
+    struct Collect(RefCell<Vec<Stanza>>);
+    impl age::Identity for Collect {
+        fn unwrap_stanza(&self, _: &Stanza) -> Option<Result<FileKey, age::DecryptError>> {
+            None
+        }
+        fn unwrap_stanzas(&self, stanzas: &[Stanza]) -> Option<Result<FileKey, age::DecryptError>> {
+            self.0.borrow_mut().extend(stanzas.iter().map(|s| Stanza {
+                tag: s.tag.clone(),
+                args: s.args.clone(),
+                body: s.body.clone(),
+            }));
+            None
+        }
+    }
+    let collect = Collect(RefCell::default());
+    if let Ok(decryptor) = age::Decryptor::new(ciphertext) {
+        let _ = decryptor.decrypt(std::iter::once(&collect as &dyn age::Identity));
+    }
+    collect.0.into_inner()
+}
+
+/// Decrypt one payload with an already unwrapped file key. age still checks
+/// the header MAC, so a wrong key fails here.
+fn decrypt_payload(ciphertext: &[u8], file_key: FileKey) -> Result<String> {
+    struct Known(FileKey);
+    impl age::Identity for Known {
+        fn unwrap_stanza(&self, _: &Stanza) -> Option<Result<FileKey, age::DecryptError>> {
+            Some(Ok(FileKey::init_with_mut(|key| {
+                key.copy_from_slice(self.0.expose_secret())
+            })))
+        }
+    }
+    let known = Known(file_key);
+    let mut reader =
+        age::Decryptor::new(ciphertext)?.decrypt(std::iter::once(&known as &dyn age::Identity))?;
+    let mut value = String::new();
+    reader
+        .read_to_string(&mut value)
+        .map_err(|_| anyhow!("decrypted payload is not valid UTF-8"))?;
+    if value.ends_with('\n') {
+        value.pop();
+    }
+    if value.is_empty() {
+        bail!("decrypted payload is empty");
+    }
+    Ok(value)
 }
 
 /// Decrypt by trying each identity **sequentially** — one `rage --decrypt`
@@ -527,5 +751,93 @@ mod tests {
             resolve_against(Path::new("/store"), Path::new("rel/key.pub")),
             PathBuf::from("/store/rel/key.pub")
         );
+    }
+
+    #[test]
+    fn prefetch_unlocks_a_plugin_identity_once_for_every_secret() {
+        use base64::Engine;
+        use std::os::unix::fs::PermissionsExt;
+
+        struct Capture(RefCell<Option<[u8; FILE_KEY_BYTES]>>);
+        impl age::Recipient for Capture {
+            fn wrap_file_key(
+                &self,
+                file_key: &FileKey,
+            ) -> Result<(Vec<Stanza>, std::collections::HashSet<String>), age::EncryptError>
+            {
+                *self.0.borrow_mut() = Some(*file_key.expose_secret());
+                let stanza = Stanza {
+                    tag: "test".into(),
+                    args: vec![],
+                    body: vec![],
+                };
+                Ok((vec![stanza], Default::default()))
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut secrets = Vec::new();
+        let mut keys = Vec::new();
+        for (index, plaintext) in ["alpha\n", "bravo", "charlie\n"].iter().enumerate() {
+            let capture = Capture(RefCell::default());
+            let encryptor =
+                age::Encryptor::with_recipients(std::iter::once(&capture as &dyn age::Recipient))
+                    .unwrap();
+            let path = dir.path().join(format!("{index}.age"));
+            let mut writer = encryptor
+                .wrap_output(fs::File::create(&path).unwrap())
+                .unwrap();
+            writer.write_all(plaintext.as_bytes()).unwrap();
+            writer.finish().unwrap();
+            secrets.push(path);
+            keys.push(
+                base64::engine::general_purpose::STANDARD_NO_PAD.encode(capture.0.take().unwrap()),
+            );
+        }
+
+        let count = dir.path().join("count");
+        let plugin = dir.path().join("age-plugin-test");
+        fs::write(
+            &plugin,
+            format!(
+                "#!/bin/sh\necho run >> '{count}'\n\
+                 while IFS= read -r line; do [ \"$line\" = '-> done' ] && break; done\nread -r _\n\
+                 printf -- '-> file-key 0\\n{k0}\\n'; read -r _; read -r _\n\
+                 printf -- '-> file-key 2\\n{k2}\\n'; read -r _; read -r _\n\
+                 printf -- '-> done\\n\\n'\n",
+                count = count.display(),
+                k0 = keys[0],
+                k2 = keys[2],
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&plugin, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let stub = dir.path().join("master_test_identity.pub");
+        fs::write(
+            &stub,
+            format!(
+                "# test stub\n{}\n",
+                age::plugin::Identity::default_for_plugin("test")
+            ),
+        )
+        .unwrap();
+        let search =
+            std::env::join_paths([dir.path().join("missing"), dir.path().to_owned()]).unwrap();
+        assert_eq!(find_on_path("age-plugin-absent", Some(&search)), None);
+
+        let session = DecryptSession::from_identities(&[stub]).unwrap();
+        session.prefetch_with_path(&secrets, Some(&search)).unwrap();
+
+        assert_eq!(
+            decrypt_with_session(&secrets[0], &session).unwrap(),
+            "alpha"
+        );
+        assert_eq!(
+            decrypt_with_session(&secrets[2], &session).unwrap(),
+            "charlie"
+        );
+        assert!(!session.plaintexts.borrow().contains_key(&secrets[1]));
+        assert_eq!(fs::read_to_string(&count).unwrap().lines().count(), 1);
     }
 }
