@@ -2,8 +2,14 @@
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-21
+
 ### Fixed
 
+- Unlock a hardware age identity once per run: `DecryptSession::prefetch`
+  unwraps every listed secret in one `identity-v1` plugin session per identity,
+  so `age-plugin-fido2-hmac` needs one touch instead of one per secret.
+  Undecrypted files still fall back to per-file `rage`.
 - Preserve all four scaffold platforms: keep the Harbor CI helper Linux-only,
   use maintained Nixpkgs 26.05 for Intel macOS, and select hook tools from the
   same platform source. Evaluate every platform's default shell in a regression
@@ -81,4 +87,5 @@
 
 Deployment integration and performance qualification remain consumer-owned gates.
 
-[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.2...HEAD
+[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.3...HEAD
+[0.4.3]: https://github.com/caniko/nix-manager-core/compare/0.4.2...0.4.3

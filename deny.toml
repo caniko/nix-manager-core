@@ -18,3 +18,13 @@ wildcards = "allow"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[advisories]
+version = 2
+# Compile-time only: age's `fl!` localization proc-macro (i18n-embed-fl /
+# i18n-config) still requires these, with no maintained replacement upstream.
+# Neither reaches the built library. Drop when age stops using i18n-embed-fl.
+ignore = [
+  { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2: compile-time only, via age's i18n-embed-fl" },
+  { id = "RUSTSEC-2026-0374", reason = "basic-toml: compile-time only, via age's i18n-config" },
+]
