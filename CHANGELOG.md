@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-21
+
 ### Fixed
 
 - Unlock a hardware age identity once per run: `DecryptSession::prefetch`
@@ -85,4 +87,5 @@
 
 Deployment integration and performance qualification remain consumer-owned gates.
 
-[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.2...HEAD
+[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.3...HEAD
+[0.4.3]: https://github.com/caniko/nix-manager-core/compare/0.4.2...0.4.3
