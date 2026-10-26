@@ -164,8 +164,13 @@ impl ExclusiveFileLock {
 
     /// Use the trusted anchor when it exists; otherwise create and use
     /// `fallback` (for hosts that predate the trusted anchor).
+    /// An anchor that exists but cannot be inspected is an error, never a
+    /// reason to fall back.
     pub fn acquire_with_fallback(path: &Path, fallback: &Path, operation: &str) -> Result<Self> {
-        if path.exists() {
+        if path
+            .try_exists()
+            .with_context(|| format!("failed to inspect lock anchor {}", path.display()))?
+        {
             Self::acquire(path, operation)
         } else {
             Self::acquire_or_create(fallback, operation)
@@ -408,6 +413,17 @@ mod tests {
         assert!(!trusted.exists());
         assert!(ExclusiveFileLock::acquire_or_create(&fallback, "op").is_err());
         drop(first);
+        if unsafe { libc::geteuid() } != 0 {
+            // An uninspectable trusted anchor must not divert to the fallback.
+            let hidden = dir.path().join("hidden");
+            fs::create_dir(&hidden).unwrap();
+            fs::write(hidden.join("lock"), []).unwrap();
+            fs::set_permissions(&hidden, fs::Permissions::from_mode(0o000)).unwrap();
+            let result =
+                ExclusiveFileLock::acquire_with_fallback(&hidden.join("lock"), &fallback, "op");
+            fs::set_permissions(&hidden, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(result.is_err());
+        }
         after_release(|| ExclusiveFileLock::acquire_or_create(&fallback, "op").ok());
     }
 
