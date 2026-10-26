@@ -247,7 +247,11 @@ impl Drop for ExclusiveFileLock {
 
 fn open_anchor(path: &Path, create: bool) -> Result<File> {
     let mut options = OpenOptions::new();
-    options.read(true).custom_flags(libc::O_NOFOLLOW);
+    // O_NONBLOCK keeps a FIFO planted at the anchor path from blocking the
+    // open before the regular-file check rejects it; regular files ignore it.
+    options
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     if create {
         options.create(true).write(true).truncate(false).mode(0o600);
     }
@@ -467,13 +471,19 @@ mod tests {
     }
 
     #[test]
-    fn symlinked_anchor_is_rejected() {
+    fn symlinked_or_fifo_anchor_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let target = read_only_anchor(dir.path());
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(ExclusiveFileLock::try_acquire(&link).is_err());
         assert!(ExclusiveFileLock::acquire_or_create(&link, "op").is_err());
+        let fifo = dir.path().join("fifo");
+        let c_fifo = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: mkfifo reads the NUL-terminated path for the duration of the call.
+        assert_eq!(unsafe { libc::mkfifo(c_fifo.as_ptr(), 0o600) }, 0);
+        assert!(ExclusiveFileLock::try_acquire(&fifo).is_err());
+        assert!(ExclusiveFileLock::acquire_or_create(&fifo, "op").is_err());
     }
 
     #[test]
