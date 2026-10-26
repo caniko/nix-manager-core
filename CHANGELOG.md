@@ -11,7 +11,9 @@
   with stale-metadata clearing, a trusted-anchor fallback, and opt-in
   inheritance across `exec`. Contention errors name the kernel holder from
   `/proc/locks`; `fs::exclusive_lock_holder_pid` and `fs::flock_holder_pid`
-  expose the lookup. Anchors are never unlinked.
+  expose the lookup. Dropping unlocks before closing, so a helper forked
+  between `fork` and `exec` cannot extend the lock, unless it was handed to an
+  exec'd program. Anchors are never unlinked.
 - `fs::atomic_write`: durable same-directory replace that preserves an
   existing file's mode and creates new files with a caller-chosen mode.
 

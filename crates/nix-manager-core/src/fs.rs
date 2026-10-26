@@ -5,9 +5,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Atomically replace `path` with `bytes`, preserving an existing file's mode.
@@ -110,12 +111,16 @@ pub fn verify_mode_0600(path: &Path) -> Result<()> {
 ///
 /// The kernel releases the lock when the last descriptor sharing it closes,
 /// including when the process dies by signal, so stale metadata can never
-/// keep it held. Dropping the guard closes the descriptor and never unlinks
-/// the anchor: replacing the pathname while another process holds the old
-/// inode would admit two concurrent holders.
+/// keep it held. Dropping the guard unlocks before closing, so a helper that
+/// briefly inherited the descriptor between `fork` and `exec` cannot extend
+/// it; after [`Self::inherit_across_exec`] dropping only closes, leaving the
+/// lock with the exec'd program. The anchor is never unlinked: replacing the
+/// pathname while another process holds the old inode would admit two
+/// concurrent holders.
 #[derive(Debug)]
 pub struct ExclusiveFileLock {
     file: File,
+    inherited: AtomicBool,
 }
 
 impl ExclusiveFileLock {
@@ -125,7 +130,7 @@ impl ExclusiveFileLock {
     pub fn try_acquire(path: &Path) -> Result<Option<Self>> {
         let file = open_anchor(path, false)?;
         match lock_exclusive_nonblocking(&file) {
-            Ok(()) => Ok(Some(Self { file })),
+            Ok(()) => Ok(Some(Self::held(file))),
             Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(None),
             Err(error) => Err(error).with_context(|| format!("failed to lock {}", path.display())),
         }
@@ -177,9 +182,17 @@ impl ExclusiveFileLock {
         }
     }
 
+    fn held(file: File) -> Self {
+        Self {
+            file,
+            inherited: AtomicBool::new(false),
+        }
+    }
+
     /// Keep the lock across `exec`: the replacement process then owns the
     /// kernel lock for its whole lifetime.
     pub fn inherit_across_exec(&self) -> Result<()> {
+        self.inherited.store(true, Ordering::Relaxed);
         let fd = self.file.as_raw_fd();
         // SAFETY: fcntl only reads and updates descriptor flags of `fd`,
         // which `self.file` keeps open for the duration of both calls.
@@ -196,7 +209,7 @@ impl ExclusiveFileLock {
 
     fn acquire_file(path: &Path, operation: &str, file: File) -> Result<Self> {
         match lock_exclusive_nonblocking(&file) {
-            Ok(()) => return Ok(Self { file }),
+            Ok(()) => return Ok(Self::held(file)),
             Err(error) if error.kind() == ErrorKind::WouldBlock => {}
             Err(error) => {
                 return Err(error).with_context(|| format!("failed to lock {}", path.display()));
@@ -214,6 +227,21 @@ impl ExclusiveFileLock {
             "another {operation} is in progress\n  lock path: {}\n  held by:   {holder}",
             path.display()
         );
+    }
+}
+
+impl AsFd for ExclusiveFileLock {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.file.as_fd()
+    }
+}
+
+impl Drop for ExclusiveFileLock {
+    fn drop(&mut self) {
+        if !self.inherited.load(Ordering::Relaxed) {
+            // SAFETY: flock only observes the descriptor `self.file` still owns.
+            unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+        }
     }
 }
 
@@ -237,8 +265,6 @@ fn open_anchor(path: &Path, create: bool) -> Result<File> {
 
 fn lock_exclusive_nonblocking(file: &File) -> std::io::Result<()> {
     // SAFETY: flock only observes the descriptor, which `file` keeps open.
-    // Unlocking is left to close(2): an explicit LOCK_UN would also release
-    // the lock for descriptors inherited across fork/exec.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
         Ok(())
     } else {
@@ -395,11 +421,24 @@ mod tests {
         assert_ne!(cloexec(&lock.file), 0);
         lock.inherit_across_exec().unwrap();
         assert_eq!(cloexec(&lock.file), 0);
-        let inherited = lock.file.try_clone().unwrap();
+        let inherited = lock.as_fd().try_clone_to_owned().unwrap();
         drop(lock);
         assert!(ExclusiveFileLock::try_acquire(&path).unwrap().is_none());
         drop(inherited);
         after_release(|| ExclusiveFileLock::try_acquire(&path).unwrap());
+    }
+
+    #[test]
+    fn dropping_releases_a_lock_shared_with_a_forked_helper() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = read_only_anchor(dir.path());
+        let lock = ExclusiveFileLock::try_acquire(&path).unwrap().unwrap();
+        // A helper forked by another thread shares the open file description
+        // until it execs, even though the descriptor is close-on-exec.
+        let forked = lock.as_fd().try_clone_to_owned().unwrap();
+        drop(lock);
+        assert!(ExclusiveFileLock::try_acquire(&path).unwrap().is_some());
+        drop(forked);
     }
 
     #[test]
