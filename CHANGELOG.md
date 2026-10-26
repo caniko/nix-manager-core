@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-26
+
+### Added
+
+- `fs::ExclusiveFileLock`: exclusive `flock(2)` over a persistent regular-file
+  anchor with fail-fast, try and bounded-wait acquisition, created anchors
+  with stale-metadata clearing, a trusted-anchor fallback, and opt-in
+  inheritance across `exec`. Contention errors name the kernel holder from
+  `/proc/locks`; `fs::exclusive_lock_holder_pid` and `fs::flock_holder_pid`
+  expose the lookup. Anchors are never unlinked.
+- `fs::atomic_write`: durable same-directory replace that preserves an
+  existing file's mode and creates new files with a caller-chosen mode.
+
+### Changed
+
+- The repository update lock uses `ExclusiveFileLock`. Its bounded wait,
+  holder metadata and `CANIX_REPO_LOCK_TIMEOUT_SECS` override are unchanged;
+  the timeout error now names the kernel holder.
+
 ## [0.4.3] - 2026-10-21
 
 ### Fixed
