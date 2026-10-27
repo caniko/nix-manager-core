@@ -11,12 +11,11 @@
 use anyhow::{anyhow, Context, Result};
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, Seek, Write};
-use std::os::fd::AsRawFd;
-use std::os::raw::c_int;
+use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use crate::fs::ExclusiveFileLock;
 use crate::ui;
 
 /// Walk upward from the current directory looking for `marker` (default
@@ -78,26 +77,24 @@ fn lock_path_for_repo_root(root: &Path) -> Result<PathBuf> {
     Ok(root.join(".repo-update.lock"))
 }
 
-fn acquire_lock_at(path: &Path, reason: &str) -> Result<RepoUpdateLockGuard> {
+fn acquire_lock_at(path: &Path, reason: &str) -> Result<ExclusiveFileLock> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create lock directory {}", parent.display()))?;
     }
 
-    let mut file = OpenOptions::new()
+    // The lock itself is taken on a separate read-only descriptor; this one
+    // creates the anchor and records the holder for waiting callers.
+    let file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(path)
         .with_context(|| format!("open repo update lock {}", path.display()))?;
-
-    match try_lock_exclusive(&file) {
-        Ok(()) => {
-            write_lock_holder(&mut file, reason)?;
-            Ok(RepoUpdateLockGuard { file })
-        }
-        Err(e) if e.kind() == ErrorKind::WouldBlock => {
+    let lock = match ExclusiveFileLock::try_acquire(path)? {
+        Some(lock) => lock,
+        None => {
             let holder = std::fs::read_to_string(path).unwrap_or_else(|_| "unknown".to_string());
             let timeout = env::var("CANIX_REPO_LOCK_TIMEOUT_SECS")
                 .ok()
@@ -110,35 +107,20 @@ fn acquire_lock_at(path: &Path, reason: &str) -> Result<RepoUpdateLockGuard> {
                 path.display(),
                 holder.trim()
             ));
-            let started = Instant::now();
-            loop {
-                std::thread::sleep(Duration::from_millis(250));
-                match try_lock_exclusive(&file) {
-                    Ok(()) => break,
-                    Err(error)
-                        if error.kind() == ErrorKind::WouldBlock && started.elapsed() < timeout => {
-                    }
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                        return Err(anyhow!(
-                            "timed out after {}s waiting for repo update lock {}; holder: {}",
-                            timeout.as_secs(),
-                            path.display(),
-                            holder.trim()
-                        ));
-                    }
-                    Err(error) => {
-                        return Err(error).with_context(|| format!("lock {}", path.display()));
-                    }
-                }
-            }
-            write_lock_holder(&mut file, reason)?;
-            Ok(RepoUpdateLockGuard { file })
+            ExclusiveFileLock::acquire_wait(path, "repo update", timeout).with_context(|| {
+                format!(
+                    "timed out after {}s waiting for repo update lock {}",
+                    timeout.as_secs(),
+                    path.display()
+                )
+            })?
         }
-        Err(e) => Err(e).with_context(|| format!("lock {}", path.display())),
-    }
+    };
+    write_lock_holder(&file, reason)?;
+    Ok(lock)
 }
 
-fn write_lock_holder(file: &mut File, reason: &str) -> Result<()> {
+fn write_lock_holder(mut file: &File, reason: &str) -> Result<()> {
     file.set_len(0)?;
     file.rewind()?;
     let cmdline = std::fs::read_to_string(format!("/proc/{}/cmdline", std::process::id()))
@@ -153,44 +135,6 @@ fn write_lock_holder(file: &mut File, reason: &str) -> Result<()> {
     )?;
     file.sync_data()?;
     Ok(())
-}
-
-fn try_lock_exclusive(file: &File) -> std::io::Result<()> {
-    flock(file, LOCK_EX | LOCK_NB)
-}
-
-fn unlock(file: &File) -> std::io::Result<()> {
-    flock(file, LOCK_UN)
-}
-
-fn flock(file: &File, operation: c_int) -> std::io::Result<()> {
-    // SAFETY: `flock` only observes the raw file descriptor and operation
-    // flags. `file` remains open for the duration of the call.
-    let rc = unsafe { c_flock(file.as_raw_fd(), operation) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-const LOCK_EX: c_int = 2;
-const LOCK_NB: c_int = 4;
-const LOCK_UN: c_int = 8;
-
-unsafe extern "C" {
-    #[link_name = "flock"]
-    fn c_flock(fd: c_int, operation: c_int) -> c_int;
-}
-
-struct RepoUpdateLockGuard {
-    file: File,
-}
-
-impl Drop for RepoUpdateLockGuard {
-    fn drop(&mut self) {
-        let _ = unlock(&self.file);
-    }
 }
 
 #[cfg(test)]
@@ -296,13 +240,8 @@ mod tests {
         let path = tmp.path().join("repo-update.lock");
         let _guard = acquire_lock_at(&path, "test").unwrap();
 
-        let second = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .unwrap();
-        assert!(try_lock_exclusive(&second).is_err());
+        assert!(ExclusiveFileLock::try_acquire(&path).unwrap().is_none());
+        let holder = fs::read_to_string(&path).unwrap();
+        assert!(holder.starts_with(&format!("pid={} reason=test ", std::process::id())));
     }
 }
