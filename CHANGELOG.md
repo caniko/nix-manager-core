@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Refresh an expired Codeberg/Forgejo OAuth token by running `fj -H <host> whoami`,
+  which refreshes and persists the token in the `fj` auth store, then re-read the
+  store. The old error is kept when `fj` is missing, there is no refresh token, or
+  the refresh fails (the failure cause is appended with token values redacted).
+  Application tokens are untouched.
+
 ## [0.4.3] - 2026-10-21
 
 ### Fixed
