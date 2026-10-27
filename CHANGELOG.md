@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-10-27
+
 ### Fixed
 
 - Refresh an expired Codeberg/Forgejo OAuth token by running `fj -H <host> whoami`,
@@ -95,5 +97,6 @@
 
 Deployment integration and performance qualification remain consumer-owned gates.
 
-[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.3...HEAD
+[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.5...HEAD
+[0.4.5]: https://github.com/caniko/nix-manager-core/compare/0.4.3...0.4.5
 [0.4.3]: https://github.com/caniko/nix-manager-core/compare/0.4.2...0.4.3
