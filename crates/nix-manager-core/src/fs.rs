@@ -28,15 +28,19 @@ pub fn atomic_write(path: &Path, bytes: &[u8], new_file_mode: u32) -> Result<()>
         .unwrap_or(new_file_mode);
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
         .with_context(|| format!("create temporary file in {}", parent.display()))?;
-    // Set the mode first so the single fsync covers contents and metadata.
+    // Set the mode after writing (a write may clear setuid/setgid bits) and
+    // before the fsync, so the synced file carries both.
+    temporary
+        .write_all(bytes)
+        .with_context(|| format!("write {}", path.display()))?;
     temporary
         .as_file()
         .set_permissions(fs::Permissions::from_mode(mode))
         .with_context(|| format!("set mode {mode:o} for {}", path.display()))?;
     temporary
-        .write_all(bytes)
-        .and_then(|()| temporary.as_file().sync_all())
-        .with_context(|| format!("write {}", path.display()))?;
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("fsync {}", path.display()))?;
     temporary
         .persist(path)
         .map_err(|error| error.error)
@@ -218,7 +222,8 @@ impl ExclusiveFileLock {
         let metadata = file
             .metadata()
             .with_context(|| format!("failed to inspect lock anchor {}", path.display()))?;
-        let holder = lock_holder_pid(&metadata, false)
+        // A shared holder blocks this exclusive lock too.
+        let holder = lock_holder_pid(&metadata, true)
             .ok()
             .flatten()
             .map(format_holder)
