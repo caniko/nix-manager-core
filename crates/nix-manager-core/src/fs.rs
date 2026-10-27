@@ -434,7 +434,10 @@ mod tests {
         assert!(error.contains("another test operation"), "{error}");
         if cfg!(target_os = "linux") {
             let pid = Some(std::process::id());
-            assert!(error.contains(&format!("pid {}", std::process::id())), "{error}");
+            assert!(
+                error.contains(&format!("pid {}", std::process::id())),
+                "{error}"
+            );
             assert_eq!(exclusive_lock_holder_pid(&path).unwrap(), pid);
             assert_eq!(flock_holder_pid(&path).unwrap(), pid);
         }
