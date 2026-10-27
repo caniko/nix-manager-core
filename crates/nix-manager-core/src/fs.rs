@@ -28,12 +28,15 @@ pub fn atomic_write(path: &Path, bytes: &[u8], new_file_mode: u32) -> Result<()>
         .unwrap_or(new_file_mode);
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
         .with_context(|| format!("create temporary file in {}", parent.display()))?;
+    // Set the mode first so the single fsync covers contents and metadata.
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(mode))
+        .with_context(|| format!("set mode {mode:o} for {}", path.display()))?;
     temporary
         .write_all(bytes)
         .and_then(|()| temporary.as_file().sync_all())
         .with_context(|| format!("write {}", path.display()))?;
-    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(mode))
-        .with_context(|| format!("set mode {mode:o} for {}", path.display()))?;
     temporary
         .persist(path)
         .map_err(|error| error.error)
@@ -169,13 +172,10 @@ impl ExclusiveFileLock {
 
     /// Use the trusted anchor when it exists; otherwise create and use
     /// `fallback` (for hosts that predate the trusted anchor).
-    /// An anchor that exists but cannot be inspected is an error, never a
-    /// reason to fall back.
+    /// Only a genuinely absent trusted path falls back. An anchor that cannot
+    /// be inspected, or a (dangling) symlink in its place, is an error.
     pub fn acquire_with_fallback(path: &Path, fallback: &Path, operation: &str) -> Result<Self> {
-        if path
-            .try_exists()
-            .with_context(|| format!("failed to inspect lock anchor {}", path.display()))?
-        {
+        if anchor_present(path)? {
             Self::acquire(path, operation)
         } else {
             Self::acquire_or_create(fallback, operation)
@@ -245,18 +245,39 @@ impl Drop for ExclusiveFileLock {
     }
 }
 
-fn open_anchor(path: &Path, create: bool) -> Result<File> {
-    let mut options = OpenOptions::new();
-    // O_NONBLOCK keeps a FIFO planted at the anchor path from blocking the
-    // open before the regular-file check rejects it; regular files ignore it.
-    options
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    if create {
-        options.create(true).write(true).truncate(false).mode(0o600);
+/// Whether anything occupies `path`, without following a final symlink.
+pub(crate) fn anchor_present(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to inspect lock anchor {}", path.display()))
+        }
     }
-    let file = options
-        .open(path)
+}
+
+fn open_anchor(path: &Path, create: bool) -> Result<File> {
+    let open = |write: bool| {
+        let mut options = OpenOptions::new();
+        // O_NONBLOCK keeps a FIFO planted at the anchor path from blocking the
+        // open before the regular-file check rejects it; regular files ignore it.
+        options
+            .read(true)
+            .write(write)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        if create {
+            options.create(true).truncate(false).mode(0o600);
+        }
+        options.open(path)
+    };
+    // NFS emulates flock with fcntl locks, which need a writable descriptor.
+    // Trusted root-owned anchors are read-only for other users; lock those
+    // through a read-only descriptor.
+    let file = open(true)
+        .or_else(|error| match error.raw_os_error() {
+            Some(libc::EACCES | libc::EROFS) if !create => open(false),
+            _ => Err(error),
+        })
         .with_context(|| format!("failed to open lock anchor {}", path.display()))?;
     let metadata = file
         .metadata()
@@ -292,6 +313,10 @@ pub fn flock_holder_pid(path: &Path) -> Result<Option<u32>> {
 }
 
 fn lock_holder_pid(metadata: &fs::Metadata, include_shared: bool) -> Result<Option<u32>> {
+    // ponytail: /proc/locks is Linux-only; other platforms report no holder.
+    if !cfg!(target_os = "linux") {
+        return Ok(None);
+    }
     let locks = fs::read_to_string("/proc/locks").context("read kernel lock table")?;
     find_lock_holder(&locks, metadata.dev(), metadata.ino(), include_shared)
 }
@@ -402,15 +427,12 @@ mod tests {
                 .unwrap_err()
                 .to_string();
         assert!(error.contains("another test operation"), "{error}");
-        assert!(
-            error.contains(&format!("pid {}", std::process::id())),
-            "{error}"
-        );
-        assert_eq!(
-            exclusive_lock_holder_pid(&path).unwrap(),
-            Some(std::process::id())
-        );
-        assert_eq!(flock_holder_pid(&path).unwrap(), Some(std::process::id()));
+        if cfg!(target_os = "linux") {
+            let pid = Some(std::process::id());
+            assert!(error.contains(&format!("pid {}", std::process::id())), "{error}");
+            assert_eq!(exclusive_lock_holder_pid(&path).unwrap(), pid);
+            assert_eq!(flock_holder_pid(&path).unwrap(), pid);
+        }
         drop(first);
         after_release(|| ExclusiveFileLock::try_acquire(&path).unwrap());
         assert!(path.exists());
@@ -456,6 +478,12 @@ mod tests {
         assert!(!trusted.exists());
         assert!(ExclusiveFileLock::acquire_or_create(&fallback, "op").is_err());
         drop(first);
+        // A dangling symlink is not an absent trusted anchor.
+        let dangling = dir.path().join("dangling");
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), &dangling).unwrap();
+        let other = dir.path().join("other-fallback");
+        assert!(ExclusiveFileLock::acquire_with_fallback(&dangling, &other, "op").is_err());
+        assert!(!other.exists());
         if unsafe { libc::geteuid() } != 0 {
             // An uninspectable trusted anchor must not divert to the fallback.
             let hidden = dir.path().join("hidden");
