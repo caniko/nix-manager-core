@@ -422,9 +422,8 @@ pub fn parse_graph(raw: &[u8], builds: &BTreeSet<String>, system: &str) -> Resul
             let path = match output.get("path").and_then(Value::as_str) {
                 Some(p) if !p.is_empty() => p.to_owned(),
                 // Nix 2.34 (derivation JSON v4) omits the path of fixed-output outputs.
-                _ => fixed_output_path(&derivation, name, output).context(
-                    "floating/content-addressed outputs require a different backend",
-                )?,
+                _ => fixed_output_path(&derivation, name, output)
+                    .context("floating/content-addressed outputs require a different backend")?,
             };
             let output = Output {
                 derivation: derivation.clone(),
