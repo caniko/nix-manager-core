@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-10-29
+
 ### Fixed
 
 - Build frontier: derive the store path of fixed-output outputs that Nix 2.34's derivation
