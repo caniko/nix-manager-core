@@ -39,9 +39,10 @@ serde_json.workspace = true
 libc.workspace = true
 forgejo-api.workspace = true
 url.workspace = true
+sha2.workspace = true
+base64 = "0.21"
 tempfile.workspace = true
 age.workspace = true
 age-core.workspace = true
 
 [dev-dependencies]
-base64 = "0.21"
