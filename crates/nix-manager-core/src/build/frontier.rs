@@ -312,6 +312,59 @@ fn store_path(raw: &str) -> Result<String> {
     Ok(path)
 }
 
+/// Store path of a fixed-output derivation output carrying only `hash` and
+/// `method` (Nix's `makeFixedOutputPath`, no references). `None` for floating
+/// outputs and for methods other than `nar`/`flat`.
+fn fixed_output_path(derivation: &str, output: &str, spec: &Value) -> Option<String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+    let hex = |b: &[u8]| {
+        b.iter().fold(String::new(), |mut s, x| {
+            let _ = write!(s, "{x:02x}");
+            s
+        })
+    };
+    let recursive = match spec.get("method")?.as_str()? {
+        "nar" => true,
+        "flat" => false,
+        _ => return None,
+    };
+    let (algo, b64) = spec.get("hash")?.as_str()?.split_once('-')?;
+    let digest = hex(&STANDARD.decode(b64).ok()?);
+    let name = derivation
+        .strip_prefix("/nix/store/")?
+        .split_once('-')?
+        .1
+        .strip_suffix(".drv")?;
+    // Fixed-output derivations only have the default output.
+    (output == "out").then_some(())?;
+    let fingerprint = if recursive && algo == "sha256" {
+        format!("source:sha256:{digest}:/nix/store:{name}")
+    } else {
+        let inner = format!(
+            "fixed:out:{}{algo}:{digest}:",
+            if recursive { "r:" } else { "" }
+        );
+        let inner = hex(&Sha256::digest(inner));
+        format!("output:out:sha256:{inner}:/nix/store:{name}")
+    };
+    let mut hash = [0u8; 20];
+    for (i, b) in Sha256::digest(fingerprint).iter().enumerate() {
+        hash[i % 20] ^= b;
+    }
+    const ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
+    let encoded: String = (0..32)
+        .rev()
+        .map(|n| {
+            let (i, j) = (n * 5 / 8, n * 5 % 8);
+            let hi = hash.get(i + 1).map_or(0, |b| u16::from(*b) << (8 - j));
+            ALPHABET[usize::from((u16::from(hash[i]) >> j | hi) & 0x1f)] as char
+        })
+        .collect();
+    Some(format!("/nix/store/{encoded}-{name}"))
+}
+
 /// Parse both Nix's original derivation map and the v4 envelope with basename keys.
 /// Definitions retain canonical dependencies even when restoration prunes them.
 pub fn parse_graph(raw: &[u8], builds: &BTreeSet<String>, system: &str) -> Result<Vec<Node>> {
@@ -366,11 +419,13 @@ pub fn parse_graph(raw: &[u8], builds: &BTreeSet<String>, system: &str) -> Resul
             }
         }
         for (name, output) in outputs {
-            let path = output
-                .get("path")
-                .and_then(Value::as_str)
-                .filter(|p| !p.is_empty())
-                .context("floating/content-addressed outputs require a different backend")?;
+            let path = match output.get("path").and_then(Value::as_str) {
+                Some(p) if !p.is_empty() => p.to_owned(),
+                // Nix 2.34 (derivation JSON v4) omits the path of fixed-output outputs.
+                _ => fixed_output_path(&derivation, name, output).context(
+                    "floating/content-addressed outputs require a different backend",
+                )?,
+            };
             let output = Output {
                 derivation: derivation.clone(),
                 name: name.clone(),
@@ -383,7 +438,7 @@ pub fn parse_graph(raw: &[u8], builds: &BTreeSet<String>, system: &str) -> Resul
             );
             graph.push(Node {
                 output,
-                path: store_path(path)?,
+                path: store_path(&path)?,
                 dependencies: dependencies.clone(),
                 restore_only,
             });
@@ -476,6 +531,52 @@ mod tests {
             "x86_64-linux"
         )
         .is_err());
+    }
+
+    #[test]
+    fn v4_fixed_output_paths_match_nix() {
+        // (drv hash, name, SRI hash, method, output hash) taken from real Nix 2.34.
+        let cases = [
+            (
+                "002g02l5xrrz4sdwhm33n7x5xbkb7y33",
+                "source",
+                "sha256-uIBVESebsH7rXnxWd/qlrZxcG7Y486PctHzcLz29HDk=",
+                "nar",
+                "rg63j369fylnzwn1k5pdjg3f35s874b2",
+            ),
+            (
+                "002i084z04nkbwlf3357222bcll84kiv",
+                "mordant-jvm-graal-ffi-jvm-3.0.1.module",
+                "sha256-DYGba/u8pO6XszB4ZoEpaQdmr/lI/ByDF4j04DSFOsM=",
+                "flat",
+                "9lndc644cajy3qx1qka7njg6n9gl6k4x",
+            ),
+            (
+                "004s4xf7v7sslzg5gay5xxxz0s47ahcj",
+                "bundledoc.doc.r74306.tar.xz",
+                "sha512-ZevnWLlWPFWUeV0mNgO7edJ85G+tHMWf5ViGiR9f5YRGFIDqY+t8HNs03GDhrgQPSXTduT6zCxj9+gQ7P8WMpA==",
+                "flat",
+                "rkc4v3rv0ys9rhrzrf5d3dp4m8g7akpq",
+            ),
+        ];
+        let drv = |h: &str, n: &str| format!("/nix/store/{h}-{n}.drv");
+        let mut drvs = serde_json::Map::new();
+        for (h, n, hash, method, _) in cases {
+            drvs.insert(
+                drv(h, n),
+                json!({"system": "x86_64-linux", "inputDrvs": {},
+                    "outputs": {"out": {"hash": hash, "method": method}}}),
+            );
+        }
+        let raw = serde_json::to_vec(&json!({"version": 4, "derivations": drvs})).unwrap();
+        let graph = parse_graph(&raw, &BTreeSet::new(), "x86_64-linux").unwrap();
+        for (h, n, _, _, out) in cases {
+            let node = graph
+                .iter()
+                .find(|x| x.output.derivation == drv(h, n))
+                .unwrap();
+            assert_eq!(node.path, format!("/nix/store/{out}-{n}"));
+        }
     }
 
     #[test]

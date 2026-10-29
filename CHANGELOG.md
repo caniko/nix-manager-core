@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Build frontier: derive the store path of fixed-output outputs that Nix 2.34's derivation
+  JSON v4 emits without `path` (only `hash` and `method`), so `derivation show --recursive`
+  plans no longer fail on every closure. Genuinely floating outputs are still rejected.
+
 ## [0.4.5] - 2026-10-27
 
 ### Fixed
