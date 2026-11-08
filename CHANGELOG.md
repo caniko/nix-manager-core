@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-## [0.4.4] - 2026-10-26
-
 ### Added
 
 - `fs::ExclusiveFileLock`: exclusive `flock(2)` over a persistent regular-file
@@ -22,6 +20,24 @@
 - The repository update lock uses `ExclusiveFileLock`. Its bounded wait,
   holder metadata and `CANIX_REPO_LOCK_TIMEOUT_SECS` override are unchanged;
   the timeout error now names the kernel holder.
+
+## [0.4.6] - 2026-10-29
+
+### Fixed
+
+- Build frontier: derive the store path of fixed-output outputs that Nix 2.34's derivation
+  JSON v4 emits without `path` (only `hash` and `method`), so `derivation show --recursive`
+  plans no longer fail on every closure. Genuinely floating outputs are still rejected.
+
+## [0.4.5] - 2026-10-27
+
+### Fixed
+
+- Refresh an expired Codeberg/Forgejo OAuth token by running `fj -H <host> whoami`,
+  which refreshes and persists the token in the `fj` auth store, then re-read the
+  store. The old error is kept when `fj` is missing, there is no refresh token, or
+  the refresh fails (the failure cause is appended with token values redacted).
+  Application tokens are untouched.
 
 ## [0.4.3] - 2026-10-21
 
@@ -108,5 +124,6 @@
 
 Deployment integration and performance qualification remain consumer-owned gates.
 
-[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.3...HEAD
+[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.5...HEAD
+[0.4.5]: https://github.com/caniko/nix-manager-core/compare/0.4.3...0.4.5
 [0.4.3]: https://github.com/caniko/nix-manager-core/compare/0.4.2...0.4.3

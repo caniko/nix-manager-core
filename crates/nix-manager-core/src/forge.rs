@@ -108,7 +108,26 @@ fn fj_auth_add_token_command(host: &str) -> String {
 /// Resolve Codeberg/Forgejo authentication from the `fj` auth store.
 pub fn codeberg_auth(host: &str) -> Result<CodebergAuth> {
     let path = fj_auth_store_path()?;
-    let raw = fs::read_to_string(&path).map_err(|e| {
+    let mut auth = load_fj_host_auth(&path, host)?;
+    let mut refresh_failure = None;
+    if auth.needs_refresh(Utc::now()) {
+        // `fj` refreshes expired OAuth tokens itself and persists them to its store, so any
+        // authenticated call is enough; we never touch the store or the tokens.
+        match refresh_with_fj(host, &auth) {
+            Ok(()) => auth = load_fj_host_auth(&path, host)?,
+            Err(RefreshError::FjMissing) => {}
+            Err(RefreshError::Failed(cause)) => refresh_failure = Some(cause),
+        }
+    }
+    auth.validate(host, &path)
+        .map_err(|e| match refresh_failure {
+            Some(cause) => anyhow!("{e}\nfj token refresh failed: {cause}"),
+            None => e,
+        })
+}
+
+fn load_fj_host_auth(path: &std::path::Path, host: &str) -> Result<FjHostAuth> {
+    let raw = fs::read_to_string(path).map_err(|e| {
         anyhow!(
             "could not read fj auth store from {}: {e}\n\
              run `{}` or `{}` for {host}",
@@ -117,7 +136,7 @@ pub fn codeberg_auth(host: &str) -> Result<CodebergAuth> {
             fj_auth_add_token_command(host)
         )
     })?;
-    let store: FjAuthStore = serde_json::from_str(&raw).map_err(|e| {
+    let mut store: FjAuthStore = serde_json::from_str(&raw).map_err(|e| {
         anyhow!(
             "could not parse fj auth store from {}: {e}\n\
              run `{}` or `{}` for {host}",
@@ -126,7 +145,7 @@ pub fn codeberg_auth(host: &str) -> Result<CodebergAuth> {
             fj_auth_add_token_command(host)
         )
     })?;
-    let auth = store.hosts.get(host).ok_or_else(|| {
+    store.hosts.remove(host).ok_or_else(|| {
         anyhow!(
             "fj auth store {} has no token for {host}\n\
                  run `{}` or `{}` for {host}",
@@ -134,11 +153,85 @@ pub fn codeberg_auth(host: &str) -> Result<CodebergAuth> {
             fj_auth_login_command(host),
             fj_auth_add_token_command(host)
         )
-    })?;
-    auth.clone().validate(host, &path)
+    })
+}
+
+enum RefreshError {
+    FjMissing,
+    Failed(String),
+}
+
+/// Upper bound for the `fj whoami` refresh round trip.
+const FJ_REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Run `fj -H <host> whoami` so fj refreshes and persists an expired OAuth token. Output is
+/// captured and redacted; no secret is passed on the command line.
+fn refresh_with_fj(host: &str, auth: &FjHostAuth) -> std::result::Result<(), RefreshError> {
+    let secrets = [Some(auth.token.as_str()), auth.refresh_token.as_deref()];
+    let redact = |s: &str| {
+        let mut out = s.trim().to_string();
+        for secret in secrets.iter().flatten().filter(|s| !s.trim().is_empty()) {
+            out = out.replace(secret.trim(), "<redacted>");
+        }
+        out.chars().take(400).collect::<String>()
+    };
+    let mut child = match Command::new("fj")
+        .args(["-H", host, "whoami"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(RefreshError::FjMissing),
+        Err(e) => return Err(RefreshError::Failed(format!("could not run fj: {e}"))),
+    };
+    let deadline = std::time::Instant::now() + FJ_REFRESH_TIMEOUT;
+    while child
+        .try_wait()
+        .map_err(|e| RefreshError::Failed(format!("wait on fj: {e}")))?
+        .is_none()
+    {
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(RefreshError::Failed(format!(
+                "`fj -H {host} whoami` timed out after {}s",
+                FJ_REFRESH_TIMEOUT.as_secs()
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| RefreshError::Failed(format!("collect fj output: {e}")))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = redact(&String::from_utf8_lossy(&out.stderr));
+    Err(RefreshError::Failed(format!(
+        "`fj -H {host} whoami` exited with {}{}",
+        out.status,
+        if stderr.is_empty() {
+            String::new()
+        } else {
+            format!(": {stderr}")
+        }
+    )))
 }
 
 impl FjHostAuth {
+    /// An OAuth entry whose expiry has passed and that carries a refresh token.
+    fn needs_refresh(&self, now: DateTime<Utc>) -> bool {
+        self.auth_type.trim().eq_ignore_ascii_case("oauth")
+            && self
+                .refresh_token
+                .as_deref()
+                .is_some_and(|t| !t.trim().is_empty())
+            && parse_fj_expires_at(self.expires_at.as_deref(), "", std::path::Path::new(""))
+                .is_ok_and(|expires_at| expires_at <= now)
+    }
+
     fn validate(self, host: &str, path: &std::path::Path) -> Result<CodebergAuth> {
         self.validate_at(host, path, Utc::now())
     }
@@ -625,6 +718,7 @@ mod tests {
         let old_token = std::env::var("CODEBERG_TOKEN").ok();
         let old_home = std::env::var("HOME").ok();
         let old_xdg_data_home = std::env::var("XDG_DATA_HOME").ok();
+        let old_path = std::env::var_os("PATH");
         std::env::remove_var("CODEBERG_TOKEN");
         std::env::remove_var("XDG_DATA_HOME");
         let result = f();
@@ -639,6 +733,10 @@ mod tests {
         match old_xdg_data_home {
             Some(v) => std::env::set_var("XDG_DATA_HOME", v),
             None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+        match old_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
         }
         result
     }
@@ -827,6 +925,8 @@ mod tests {
                 }"#,
             )
             .unwrap();
+            let no_fj = tempfile::tempdir().unwrap();
+            std::env::set_var("PATH", no_fj.path());
             std::env::set_var("XDG_DATA_HOME", dir.path());
 
             let result = codeberg_auth("codeberg.org");
@@ -837,6 +937,131 @@ mod tests {
             assert!(err.contains("does not refresh OAuth tokens itself"));
             assert!(err.contains("fj -H codeberg.org auth login"));
             assert!(err.contains("fj -H codeberg.org auth add-token"));
+        });
+    }
+
+    const EXPIRED: &str = "[2000, 1, 0, 0, 0, 0, 0, 0, 0]";
+
+    fn keys_json(auth_type: &str, token: &str, refresh: Option<&str>, expires: &str) -> String {
+        let refresh = refresh
+            .map(|r| format!(r#""refresh_token": "{r}","#))
+            .unwrap_or_default();
+        format!(
+            r#"{{"hosts": {{"codeberg.org": {{"type": "{auth_type}", "name": "caniko",
+            "token": "{token}", {refresh} "expires_at": {expires}}},
+            "other.example": {{"type": "Application", "token": "other-token"}}}},
+            "aliases": {{}}, "default_ssh": []}}"#
+        )
+    }
+
+    /// Install a fake `fj` first on PATH. It records its argv in `<dir>/args` and runs `body`.
+    fn fake_fj(body: &str) -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fj");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho \"$@\" > \"{}/args\"\n{body}\n",
+                dir.path().display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let old = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{old}", dir.path().display()));
+        dir
+    }
+
+    fn write_keys(data_home: &std::path::Path, json: &str) -> PathBuf {
+        let path = data_home.join("forgejo-cli/keys.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, json).unwrap();
+        std::env::set_var("XDG_DATA_HOME", data_home);
+        path
+    }
+
+    #[test]
+    fn expired_oauth_is_refreshed_through_fj() {
+        with_clean_env(|| {
+            let data = tempfile::tempdir().unwrap();
+            let keys = write_keys(
+                data.path(),
+                &keys_json("OAuth", "old-token", Some("refresh-token"), EXPIRED),
+            );
+            let fresh = data.path().join("fresh.json");
+            fs::write(
+                &fresh,
+                keys_json(
+                    "OAuth",
+                    "fresh-token",
+                    Some("refresh-2"),
+                    "[2999, 161, 6, 16, 47, 0, 0, 0, 0]",
+                ),
+            )
+            .unwrap();
+            let fj = fake_fj(&format!(
+                "cp \"{}\" \"{}\"",
+                fresh.display(),
+                keys.display()
+            ));
+
+            let auth = codeberg_auth("codeberg.org").unwrap();
+            assert_eq!(auth.token(), "fresh-token");
+            assert_eq!(auth.kind, CodebergAuthKind::OAuth);
+            let args = fs::read_to_string(fj.path().join("args")).unwrap();
+            assert_eq!(args.trim(), "-H codeberg.org whoami");
+        });
+    }
+
+    #[test]
+    fn expired_oauth_without_refresh_token_keeps_old_error_and_skips_fj() {
+        with_clean_env(|| {
+            let data = tempfile::tempdir().unwrap();
+            write_keys(data.path(), &keys_json("OAuth", "old-token", None, EXPIRED));
+            let fj = fake_fj("exit 0");
+
+            let err = codeberg_auth("codeberg.org").unwrap_err().to_string();
+            assert!(err.contains("OAuth token for codeberg.org expired"));
+            assert!(err.contains("the fj store has no refresh token"));
+            assert!(err.contains("fj -H codeberg.org auth login"));
+            assert!(!fj.path().join("args").exists());
+        });
+    }
+
+    #[test]
+    fn failed_fj_refresh_reports_cause_without_leaking_tokens() {
+        with_clean_env(|| {
+            let data = tempfile::tempdir().unwrap();
+            write_keys(
+                data.path(),
+                &keys_json("OAuth", "old-token", Some("refresh-token"), EXPIRED),
+            );
+            let _fj =
+                fake_fj("echo \"invalid_grant for refresh-token (was old-token)\" >&2; exit 3");
+
+            let err = codeberg_auth("codeberg.org").unwrap_err().to_string();
+            assert!(err.contains("OAuth token for codeberg.org expired"));
+            assert!(err.contains("fj token refresh failed"));
+            assert!(err.contains("invalid_grant"));
+            assert!(err.contains("<redacted>"));
+            assert!(!err.contains("refresh-token (") && !err.contains("old-token"));
+        });
+    }
+
+    #[test]
+    fn application_token_never_invokes_fj() {
+        with_clean_env(|| {
+            let data = tempfile::tempdir().unwrap();
+            let json = keys_json("Application", "app-token", None, EXPIRED);
+            let keys = write_keys(data.path(), &json);
+            let fj = fake_fj("exit 1");
+
+            let auth = codeberg_auth("codeberg.org").unwrap();
+            assert_eq!(auth.token(), "app-token");
+            assert_eq!(auth.kind, CodebergAuthKind::ApplicationToken);
+            assert!(!fj.path().join("args").exists());
+            assert_eq!(fs::read_to_string(keys).unwrap(), json);
         });
     }
 
