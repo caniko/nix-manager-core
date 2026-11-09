@@ -24,6 +24,7 @@ Manager-flake projects follow a two-repo pattern:
 | [`ui`]    | Terminal output helpers (headers, steps, spinners, confirm typed)        |
 | [`exec`]  | Shell execution (`run`, `capture`, `cap`, `replace`, `run_with_spinner`) |
 | [`repo`]  | Repository root discovery (walk up for a marker file)                    |
+| [`fs`]    | Atomic writes and persistent-anchor `flock` locks (`ExclusiveFileLock`)  |
 | [`age`]   | age/rage decryption and shared identity resolution (flags → env → stubs) |
 | [`forge`] | Push Actions secrets and register account GPG keys on Forgejo/GitHub     |
 
