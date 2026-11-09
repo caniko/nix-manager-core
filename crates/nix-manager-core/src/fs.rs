@@ -14,14 +14,29 @@ use std::time::{Duration, Instant};
 /// Atomically replace `path` with `bytes`, preserving an existing file's mode.
 ///
 /// A new file is created with `new_file_mode`. The temporary file lives next
-/// to the destination; it is fsynced before the rename and the parent
-/// directory is fsynced after it, so a crash leaves either the old or the new
-/// contents. Missing parent directories are created.
+/// to the destination; it is fsynced before the rename and the directory chain
+/// is fsynced after it, so a crash leaves either the old or the new contents.
+/// Missing parent directories are created and their entries synced too.
 pub fn atomic_write(path: &Path, bytes: &[u8], new_file_mode: u32) -> Result<()> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    // Sync the destination's directory and every directory this call creates:
+    // without the created ones the rename into a new tree is not durable.
+    let mut directories = Vec::new();
+    let mut ancestor = parent;
+    loop {
+        directories.push(ancestor.to_path_buf());
+        if ancestor.exists() {
+            break;
+        }
+        match ancestor.parent() {
+            Some(up) if up.as_os_str().is_empty() => ancestor = Path::new("."),
+            Some(up) => ancestor = up,
+            None => break,
+        }
+    }
     fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     let mode = fs::metadata(path)
         .map(|metadata| metadata.permissions().mode() & 0o7777)
@@ -45,9 +60,11 @@ pub fn atomic_write(path: &Path, bytes: &[u8], new_file_mode: u32) -> Result<()>
         .persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("replace {}", path.display()))?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .with_context(|| format!("fsync {}", parent.display()))?;
+    for directory in &directories {
+        File::open(directory)
+            .and_then(|entry| entry.sync_all())
+            .with_context(|| format!("fsync {}", directory.display()))?;
+    }
     Ok(())
 }
 
@@ -178,6 +195,11 @@ impl ExclusiveFileLock {
     /// `fallback` (for hosts that predate the trusted anchor).
     /// Only a genuinely absent trusted path falls back. An anchor that cannot
     /// be inspected, or a (dangling) symlink in its place, is an error.
+    ///
+    /// The existence check and the acquisition are separate syscalls, so a
+    /// trusted anchor that appears in between is missed and this caller locks
+    /// the fallback inode instead; the window only exists while a legacy host
+    /// is being upgraded, and closing it needs a protocol both sides agree on.
     pub fn acquire_with_fallback(path: &Path, fallback: &Path, operation: &str) -> Result<Self> {
         if anchor_present(path)? {
             Self::acquire(path, operation)
