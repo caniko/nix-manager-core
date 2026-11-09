@@ -12,6 +12,8 @@ use anyhow::{anyhow, Context, Result};
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, Write};
+use std::os::fd::AsFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -83,13 +85,14 @@ fn acquire_lock_at(path: &Path, reason: &str) -> Result<ExclusiveFileLock> {
             .with_context(|| format!("create lock directory {}", parent.display()))?;
     }
 
-    // The lock itself is taken on a separate read-only descriptor; this one
-    // creates the anchor and records the holder for waiting callers.
-    let file = OpenOptions::new()
+    // This open only creates the anchor. The holder is written through the
+    // locked descriptor: mandatory flock emulation (CIFS) refuses I/O on others.
+    OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)
         .with_context(|| format!("open repo update lock {}", path.display()))?;
     let lock = match ExclusiveFileLock::try_acquire(path)? {
@@ -116,7 +119,12 @@ fn acquire_lock_at(path: &Path, reason: &str) -> Result<ExclusiveFileLock> {
             })?
         }
     };
-    write_lock_holder(&file, reason)?;
+    let holder = File::from(
+        lock.as_fd()
+            .try_clone_to_owned()
+            .context("duplicate repo update lock descriptor")?,
+    );
+    write_lock_holder(&holder, reason)?;
     Ok(lock)
 }
 

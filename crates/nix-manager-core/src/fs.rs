@@ -149,8 +149,8 @@ pub struct ExclusiveFileLock {
 
 impl ExclusiveFileLock {
     /// Lock an existing anchor without waiting; `None` when another
-    /// descriptor holds it. The anchor is opened read-only, so trusted
-    /// root-owned anchors work for unprivileged callers.
+    /// descriptor holds it. The anchor is opened read-write, falling back to
+    /// read-only, so trusted root-owned anchors work for unprivileged callers.
     pub fn try_acquire(path: &Path) -> Result<Option<Self>> {
         let file = open_anchor(path, false)?;
         match lock_exclusive_nonblocking(&file) {
@@ -216,9 +216,9 @@ impl ExclusiveFileLock {
     }
 
     /// Keep the lock across `exec`: the replacement process then owns the
-    /// kernel lock for its whole lifetime.
+    /// kernel lock for its whole lifetime. Call it immediately before the
+    /// exec or spawn that should own the lock; every later child inherits it.
     pub fn inherit_across_exec(&self) -> Result<()> {
-        self.inherited.store(true, Ordering::Relaxed);
         let fd = self.file.as_raw_fd();
         // SAFETY: fcntl only reads and updates descriptor flags of `fd`,
         // which `self.file` keeps open for the duration of both calls.
@@ -230,6 +230,8 @@ impl ExclusiveFileLock {
         if unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
             return Err(std::io::Error::last_os_error()).context("preserve lock across exec");
         }
+        // Only skip the drop-time unlock once the descriptor really survives exec.
+        self.inherited.store(true, Ordering::Relaxed);
         Ok(())
     }
 
