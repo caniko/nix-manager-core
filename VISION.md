@@ -4,9 +4,9 @@
 support library plus a Nix build scaffold that domain repositories use instead
 of each re-implementing terminal output, shell execution, repository discovery,
 secret decryption, forge credentials, or exact Nix build dispatch. Its README
-names `canix`, `dns-manager`, and `secret-manager` as the data repos that follow
-the two-repo pattern with this engine repo; the canix CLI crates depend on it
-directly.
+names `canix`, `dns-manager`, and `secret-manager` as example data repos that
+follow the two-repo pattern with this engine repo; the canix CLI crates depend
+on it directly.
 
 ## Problem
 
@@ -33,7 +33,8 @@ questions that are easy to get wrong.
 - **Evidence formats are versioned protocols.** `cache_pin` is a read-only
   payload with an explicit schema version, not a resolver or apply engine.
 - **Secret-adjacent writes use one protocol.** `fs::atomic_write_0600` writes,
-  fsyncs, chmods, verifies, renames, and re-verifies mode and parent directory.
+  fsyncs, chmods, verifies, renames, re-verifies mode, and syncs the parent
+  directory.
 - **Permissive dependency policy.** `deny.toml` holds the accepted licenses and
   the required Harbor gate runs license and advisory checks.
 
