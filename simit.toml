@@ -2,6 +2,7 @@
 runner = "ubuntu-24.04"
 provider = "actions"
 platform = "github"
+push_branches = ["trunk"]
 required_gates = [{ id = "harbor-ci", run = "nix develop -c harbor-ci full" }]
 runtime = "nix"
 all_features = false
@@ -11,3 +12,4 @@ with_audit = true
 with_docs = true
 publish_crates = true
 extra_env = { RUSTDOCFLAGS = "-D warnings" }
+publish_strategy = "members"
