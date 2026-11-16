@@ -2,7 +2,7 @@
   description = "Support library and Nix scaffold for manager-flake Rust projects";
 
   inputs = {
-    harbor-rs.url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=fac8049316846e0ef1c1e6acd92aed7a337b333a";
+    harbor-rs.url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=adbbcf515fe831f9683a786410556d94372202eb";
 
     nixpkgs.follows = "harbor-rs/nixpkgs";
     # The maintained 26.05 branch retains Intel macOS support.
