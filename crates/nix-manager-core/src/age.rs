@@ -124,10 +124,26 @@ impl DecryptSession {
 
 /// Decrypt with a run-scoped session, using a prefetched plaintext when one exists.
 pub fn decrypt_with_session(secret: &Path, session: &DecryptSession) -> Result<String> {
+    decrypt_with_session_inner(secret, session, false)
+}
+
+/// Decrypt with a session, accepting an empty plaintext after newline stripping.
+pub fn decrypt_with_session_allowing_empty(
+    secret: &Path,
+    session: &DecryptSession,
+) -> Result<String> {
+    decrypt_with_session_inner(secret, session, true)
+}
+
+fn decrypt_with_session_inner(
+    secret: &Path,
+    session: &DecryptSession,
+    allow_empty: bool,
+) -> Result<String> {
     if let Some(value) = session.plaintexts.borrow().get(secret) {
-        return Ok(value.clone());
+        return check_empty(value.clone(), allow_empty);
     }
-    decrypt_with_identities(secret, session.identities())
+    decrypt_with_identities_inner(secret, session.identities(), allow_empty)
 }
 
 /// The first `binary` file in the `PATH`-style list `path`. The plugin
@@ -270,13 +286,7 @@ fn decrypt_payload(ciphertext: &[u8], file_key: FileKey) -> Result<String> {
     reader
         .read_to_string(&mut value)
         .map_err(|_| anyhow!("decrypted payload is not valid UTF-8"))?;
-    if value.ends_with('\n') {
-        value.pop();
-    }
-    if value.is_empty() {
-        bail!("decrypted payload is empty");
-    }
-    Ok(value)
+    normalize_plaintext(value, true)
 }
 
 /// Decrypt by trying each identity **sequentially** — one `rage --decrypt`
@@ -286,13 +296,21 @@ fn decrypt_payload(ciphertext: &[u8], file_key: FileKey) -> Result<String> {
 /// multiple `AGE-PLUGIN-FIDO2-HMAC` identity stubs are present.
 /// Returns the plaintext with one trailing newline stripped.
 pub fn decrypt_with_identities(secret: &Path, identities: &[PathBuf]) -> Result<String> {
+    decrypt_with_identities_inner(secret, identities, false)
+}
+
+fn decrypt_with_identities_inner(
+    secret: &Path,
+    identities: &[PathBuf],
+    allow_empty: bool,
+) -> Result<String> {
     if identities.is_empty() {
         bail!("no identities attempted");
     }
 
     let mut last_err = None;
     for identity in identities {
-        match try_decrypt_with_single_identity(secret, identity) {
+        match try_decrypt_with_single_identity(secret, identity, allow_empty) {
             Ok(plaintext) => return Ok(plaintext),
             Err(e) => {
                 // Propagate Ctrl-C immediately rather than trying more identities.
@@ -318,7 +336,11 @@ pub fn decrypt_with_identities(secret: &Path, identities: &[PathBuf]) -> Result<
 /// Run `rage --decrypt --identity <identity> <secret>` and return the
 /// plaintext. stderr and stdin are inherited so FIDO2 touch prompts work
 /// transparently.
-fn try_decrypt_with_single_identity(secret: &Path, identity: &Path) -> Result<String> {
+fn try_decrypt_with_single_identity(
+    secret: &Path,
+    identity: &Path,
+    allow_empty: bool,
+) -> Result<String> {
     ui::step(format!(
         "decrypting {} with {}",
         secret.display(),
@@ -353,12 +375,20 @@ fn try_decrypt_with_single_identity(secret: &Path, identity: &Path) -> Result<St
         ));
     }
 
-    let mut value = String::from_utf8(out.stdout)
+    let value = String::from_utf8(out.stdout)
         .map_err(|_| anyhow!("decrypted payload is not valid UTF-8"))?;
+    normalize_plaintext(value, allow_empty)
+}
+
+fn normalize_plaintext(mut value: String, allow_empty: bool) -> Result<String> {
     if value.ends_with('\n') {
         value.pop();
     }
-    if value.is_empty() {
+    check_empty(value, allow_empty)
+}
+
+fn check_empty(value: String, allow_empty: bool) -> Result<String> {
+    if !allow_empty && value.is_empty() {
         bail!("decrypted payload is empty");
     }
     Ok(value)
@@ -754,6 +784,34 @@ mod tests {
     }
 
     #[test]
+    fn allowing_empty_works_with_rage_fallback() {
+        let f = setup_fixture();
+        let session = DecryptSession::from_identities(std::slice::from_ref(&f.identity)).unwrap();
+        for plaintext in ["", "\n", "value\n", "value\n\n"] {
+            let dir = tempfile::tempdir().unwrap();
+            let encrypted = encrypt(&f.pub_key, plaintext, &dir);
+            let expected = plaintext.strip_suffix('\n').unwrap_or(plaintext);
+            assert!(decrypt_with_session_allowing_empty(&encrypted, &session).unwrap() == expected);
+            if expected.is_empty() {
+                assert_eq!(
+                    decrypt_with_session(&encrypted, &session)
+                        .unwrap_err()
+                        .to_string(),
+                    "decrypted payload is empty"
+                );
+                assert_eq!(
+                    decrypt_with_identities(&encrypted, std::slice::from_ref(&f.identity))
+                        .unwrap_err()
+                        .to_string(),
+                    "decrypted payload is empty"
+                );
+            } else {
+                assert!(decrypt_with_session(&encrypted, &session).unwrap() == expected);
+            }
+        }
+    }
+
+    #[test]
     fn prefetch_unlocks_a_plugin_identity_once_for_every_secret() {
         use base64::Engine;
         use std::os::unix::fs::PermissionsExt;
@@ -778,7 +836,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut secrets = Vec::new();
         let mut keys = Vec::new();
-        for (index, plaintext) in ["alpha\n", "bravo", "charlie\n"].iter().enumerate() {
+        for (index, plaintext) in ["alpha\n", "bravo", "charlie\n", "", "\n"]
+            .iter()
+            .enumerate()
+        {
             let capture = Capture(RefCell::default());
             let encryptor =
                 age::Encryptor::with_recipients(std::iter::once(&capture as &dyn age::Recipient))
@@ -804,10 +865,14 @@ mod tests {
                  while IFS= read -r line; do [ \"$line\" = '-> done' ] && break; done\nread -r _\n\
                  printf -- '-> file-key 0\\n{k0}\\n'; read -r _; read -r _\n\
                  printf -- '-> file-key 2\\n{k2}\\n'; read -r _; read -r _\n\
+                 printf -- '-> file-key 3\\n{k3}\\n'; read -r _; read -r _\n\
+                 printf -- '-> file-key 4\\n{k4}\\n'; read -r _; read -r _\n\
                  printf -- '-> done\\n\\n'\n",
                 count = count.display(),
                 k0 = keys[0],
                 k2 = keys[2],
+                k3 = keys[3],
+                k4 = keys[4],
             ),
         )
         .unwrap();
@@ -838,6 +903,18 @@ mod tests {
             "charlie"
         );
         assert!(!session.plaintexts.borrow().contains_key(&secrets[1]));
+        for secret in &secrets[3..] {
+            assert!(session.plaintexts.borrow().contains_key(secret));
+            assert!(decrypt_with_session_allowing_empty(secret, &session)
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                decrypt_with_session(secret, &session)
+                    .unwrap_err()
+                    .to_string(),
+                "decrypted payload is empty"
+            );
+        }
         assert_eq!(fs::read_to_string(&count).unwrap().lines().count(), 1);
     }
 }

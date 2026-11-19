@@ -4,6 +4,8 @@
 
 ### Added
 
+- `age::decrypt_with_session_allowing_empty` accepts empty plaintexts without
+  triggering a second hardware touch after batch prefetch.
 - `fs::ExclusiveFileLock`: exclusive `flock(2)` over a persistent regular-file
   anchor with fail-fast, try and bounded-wait acquisition, created anchors
   with stale-metadata clearing, a trusted-anchor fallback, and opt-in
