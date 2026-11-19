@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-11-19
+
 ### Added
 
 - `age::decrypt_with_session_allowing_empty` accepts empty plaintexts without
@@ -135,6 +137,7 @@
 
 Deployment integration and performance qualification remain consumer-owned gates.
 
-[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.5...HEAD
+[Unreleased]: https://github.com/caniko/nix-manager-core/compare/0.4.8...HEAD
+[0.4.8]: https://github.com/caniko/nix-manager-core/compare/0.4.6...0.4.8
 [0.4.5]: https://github.com/caniko/nix-manager-core/compare/0.4.3...0.4.5
 [0.4.3]: https://github.com/caniko/nix-manager-core/compare/0.4.2...0.4.3
