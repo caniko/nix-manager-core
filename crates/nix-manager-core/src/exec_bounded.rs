@@ -228,7 +228,13 @@ fn group_is_live(group: i32) -> io::Result<bool> {
         }
         let stat = match std::fs::read_to_string(entry.path().join("stat")) {
             Ok(stat) => stat,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            // A process that exits during the scan reads as ESRCH, not ENOENT.
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    || error.raw_os_error() == Some(libc::ESRCH) =>
+            {
+                continue
+            }
             Err(error) => return Err(error),
         };
         if let Some((_, fields)) = stat.rsplit_once(") ") {

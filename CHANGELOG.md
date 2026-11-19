@@ -23,6 +23,15 @@
   holder metadata and `CANIX_REPO_LOCK_TIMEOUT_SECS` override are unchanged;
   the timeout error now names the kernel holder.
 
+### Fixed
+
+- `build::frontier`: an output entry on disk that the store database does not
+  register (left by a cancelled build) is a cache miss, not an error. Nix
+  replaces it when it realises the output; other inspection failures still
+  fail closed.
+- `exec_bounded`: a process that exits while the timeout path checks its
+  group no longer fails termination with "No such process".
+
 ## [0.4.6] - 2026-10-29
 
 ### Fixed

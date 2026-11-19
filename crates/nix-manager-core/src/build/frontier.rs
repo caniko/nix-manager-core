@@ -7,7 +7,7 @@
 //! compilation; a disappearing substitute produces an error, never an expanded
 //! uncoordinated build.
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -178,8 +178,10 @@ impl Native {
     }
 
     fn valid_entry(&self, path: &str) -> Result<bool> {
-        // A symlink is itself an output, even when its target is absent. Only
-        // a missing entry is a cache miss; inspection errors must fail closed.
+        // A symlink is itself an output, even when its target is absent. A
+        // missing entry is a cache miss, and so is one the store database does
+        // not register (a cancelled build's leftover): Nix replaces it when it
+        // builds the output. Other inspection errors must fail closed.
         match fs::symlink_metadata(path) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -192,12 +194,14 @@ impl Native {
             "--no-allow-import-from-derivation".into(),
             path.into(),
         ])?;
-        ensure!(
-            result.status.success(),
-            "existing output has no valid store evidence: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        Ok(true)
+        if result.status.success() {
+            return Ok(true);
+        }
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        if stderr.contains(&format!("path '{path}' is not valid")) {
+            return Ok(false);
+        }
+        bail!("existing output has no valid store evidence: {stderr}")
     }
 
     pub fn realise(&self, node: &Node) -> Result<()> {
@@ -637,6 +641,7 @@ mod tests {
         let nix = temp.path().join("nix");
         let queries = temp.path().join("queries");
         let rejected = temp.path().join("rejected");
+        let unregistered = temp.path().join("unregistered");
         fs::write(
             &timeout,
             format!("#!{}\nshift 3\nexec \"$@\"\n", shell.display()),
@@ -645,9 +650,10 @@ mod tests {
         fs::write(
             &nix,
             format!(
-                "#!{}\nprintf '%s\\n' \"$1\" >> '{}'\n[ ! -e '{}' ]\n",
+                "#!{}\nprintf '%s\\n' \"$1\" >> '{}'\nif [ -e '{}' ]; then echo \"error: path '$3' is not valid\" >&2; exit 1; fi\n[ ! -e '{}' ]\n",
                 shell.display(),
                 queries.display(),
+                unregistered.display(),
                 rejected.display()
             ),
         )
@@ -669,11 +675,14 @@ mod tests {
         // Use a fixture entry for filesystem/query behavior; the public method
         // separately enforces that callers supply an exact /nix/store path.
         assert!(native.valid_entry(output.to_str().unwrap()).unwrap());
-        fs::write(rejected, "invalid in the store database").unwrap();
+        fs::write(&rejected, "invalid in the store database").unwrap();
         assert!(native.valid_entry(output.to_str().unwrap()).is_err());
+        // An entry on disk that the database does not register is a miss.
+        fs::write(&unregistered, "").unwrap();
+        assert!(!native.valid_entry(output.to_str().unwrap()).unwrap());
         assert_eq!(
             fs::read_to_string(queries).unwrap(),
-            "path-info\npath-info\n"
+            "path-info\npath-info\npath-info\n"
         );
     }
 
