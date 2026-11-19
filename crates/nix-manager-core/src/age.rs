@@ -36,10 +36,14 @@ use crate::ui;
 /// [`DecryptSession::prefetch`] decrypts many files through one plugin
 /// session per identity. `age-plugin-fido2-hmac` derives its X25519 key once
 /// per plugin process, so a sync run needs one hardware touch instead of one
-/// per secret. Files the prefetch could not decrypt fall back to `rage`.
+/// per secret. A file the prefetch did not decrypt falls back to `rage` with
+/// every identity whose plugin did not raise an error on that file's stanza; if
+/// none is left, it fails with the plugin's error instead of another touch.
 pub struct DecryptSession {
     identities: Vec<PathBuf>,
     plaintexts: RefCell<HashMap<PathBuf, String>>,
+    /// Per file, the identities whose plugin raised an error on its stanza.
+    failed: RefCell<HashMap<PathBuf, Vec<(PathBuf, String)>>>,
 }
 
 impl fmt::Debug for DecryptSession {
@@ -59,6 +63,7 @@ impl DecryptSession {
         Ok(Self {
             identities: identities.to_vec(),
             plaintexts: RefCell::default(),
+            failed: RefCell::default(),
         })
     }
 
@@ -70,7 +75,8 @@ impl DecryptSession {
     ///
     /// Identities are tried in order, one at a time, so separate FIDO2 stubs
     /// never share a plugin invocation. A failed session moves on to the next
-    /// identity; whatever stays undecrypted is retried per file later.
+    /// identity. Plugin `error` replies are reported; a later per-file retry of a
+    /// file one names skips that identity.
     pub fn prefetch(&self, secrets: &[PathBuf]) -> Result<()> {
         self.prefetch_with_path(secrets, std::env::var_os("PATH").as_deref())
     }
@@ -103,13 +109,28 @@ impl DecryptSession {
                 ui::warn(format!("{name} is not on PATH"));
                 continue;
             };
-            let values = match decrypt_batch(&binary, &plugin.to_string(), &pending) {
-                Ok(values) => values,
+            let (values, errors) = match decrypt_batch(&binary, &plugin.to_string(), &pending) {
+                Ok(batch) => batch,
                 Err(e) => {
                     ui::warn(format!("{}: {e:#}", identity.display()));
                     continue;
                 }
             };
+            // An error the plugin raised on a file's own stanza rules out this
+            // identity for that file: a per-file retry with it would ask for
+            // another touch on a token that just failed. Other identities and
+            // other errors keep the fallback.
+            let mut failed = self.failed.borrow_mut();
+            for (index, error) in errors {
+                let message = format!("{}: {error}", identity.display());
+                ui::warn(&message);
+                if let Some(secret) = index.and_then(|i| pending.get(i)) {
+                    failed
+                        .entry((*secret).clone())
+                        .or_default()
+                        .push((identity.clone(), message));
+                }
+            }
             let mut plaintexts = self.plaintexts.borrow_mut();
             for (secret, value) in pending.iter().zip(values) {
                 if let Some(value) = value {
@@ -143,7 +164,31 @@ fn decrypt_with_session_inner(
     if let Some(value) = session.plaintexts.borrow().get(secret) {
         return check_empty(value.clone(), allow_empty);
     }
-    decrypt_with_identities_inner(secret, session.identities(), allow_empty)
+    let errors = session
+        .failed
+        .borrow()
+        .get(secret)
+        .cloned()
+        .unwrap_or_default();
+    if errors.is_empty() {
+        return decrypt_with_identities_inner(secret, session.identities(), allow_empty);
+    }
+    // Retry only with identities whose plugin did not reject this file.
+    let rest: Vec<PathBuf> = session
+        .identities()
+        .iter()
+        .filter(|identity| !errors.iter().any(|(failed, _)| failed == *identity))
+        .cloned()
+        .collect();
+    if rest.is_empty() {
+        let reasons: Vec<&str> = errors.iter().map(|(_, message)| message.as_str()).collect();
+        bail!(
+            "{} was not decrypted in this run's batch ({}); not retried per file",
+            secret.display(),
+            reasons.join("; ")
+        );
+    }
+    decrypt_with_identities_inner(secret, &rest, allow_empty)
 }
 
 /// The first `binary` file in the `PATH`-style list `path`. The plugin
@@ -171,11 +216,17 @@ fn plugin_identity(path: &Path) -> Result<Option<age::plugin::Identity>> {
 
 /// Unwrap the file keys of `secrets` in one `identity-v1` plugin session and
 /// decrypt each payload. `None` marks a file the plugin did not unwrap.
+/// Plugin `error` replies, each with the index of the file it names, if any.
+type BatchErrors = Vec<(Option<usize>, String)>;
+
+/// One plugin session for `secrets`: each file's plaintext, where the plugin
+/// returned its key, and the plugin's `error` replies with the index of the
+/// file they name, if any.
 fn decrypt_batch(
     binary: &Path,
     identity: &str,
     secrets: &[&PathBuf],
-) -> Result<Vec<Option<String>>> {
+) -> Result<(Vec<Option<String>>, BatchErrors)> {
     let ciphertexts = secrets
         .iter()
         .map(|secret| {
@@ -184,6 +235,7 @@ fn decrypt_batch(
         .collect::<Result<Vec<_>>>()?;
     let stanzas: Vec<Vec<Stanza>> = ciphertexts.iter().map(|c| header_stanzas(c)).collect();
     let mut file_keys: Vec<Option<FileKey>> = secrets.iter().map(|_| None).collect();
+    let mut errors = Vec::new();
     let mut conn = Connection::open(binary, IDENTITY_V1)
         .with_context(|| format!("starting {}", binary.display()))?;
     conn.unidir_send(|mut phase| {
@@ -230,18 +282,31 @@ fn decrypt_batch(
                     _ => reply.fail(),
                 }
             }
-            "error" => reply.ok(None),
+            "error" => {
+                // `stanza FILE STANZA` names the file; `internal` does not.
+                let file = match command.args.as_slice() {
+                    [kind, file, ..] if kind == "stanza" => file.parse::<usize>().ok(),
+                    _ => None,
+                };
+                let body = String::from_utf8_lossy(&command.body);
+                errors.push((
+                    file,
+                    format!("({}) {}", command.args.join(" "), body.trim()),
+                ));
+                reply.ok(None)
+            }
             _ => reply.fail(),
         },
     )?;
 
-    Ok(ciphertexts
+    let values = ciphertexts
         .iter()
         .zip(file_keys)
         .map(|(ciphertext, file_key)| {
             file_key.and_then(|key| decrypt_payload(ciphertext, key).ok())
         })
-        .collect())
+        .collect();
+    Ok((values, errors))
 }
 
 /// The recipient stanzas in an age header, captured by an identity that
@@ -864,6 +929,7 @@ mod tests {
                 "#!/bin/sh\necho run >> '{count}'\n\
                  while IFS= read -r line; do [ \"$line\" = '-> done' ] && break; done\nread -r _\n\
                  printf -- '-> file-key 0\\n{k0}\\n'; read -r _; read -r _\n\
+                 printf -- '-> error stanza 1 0\\nZmFpbGVkIHRvIGdldCBhc3NlcnRpb246IGludGVybmFsIGVycm9y\\n'; read -r _; read -r _\n\
                  printf -- '-> file-key 2\\n{k2}\\n'; read -r _; read -r _\n\
                  printf -- '-> file-key 3\\n{k3}\\n'; read -r _; read -r _\n\
                  printf -- '-> file-key 4\\n{k4}\\n'; read -r _; read -r _\n\
@@ -903,6 +969,31 @@ mod tests {
             "charlie"
         );
         assert!(!session.plaintexts.borrow().contains_key(&secrets[1]));
+        // The plugin's error is the reason, and the file is not retried with
+        // another touch.
+        let error = decrypt_with_session(&secrets[1], &session)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("(stanza 1 0) failed to get assertion: internal error")
+                && error.contains("not retried per file"),
+            "{error}"
+        );
+        // A plugin that never ran leaves the per-file fallback in place.
+        let absent = dir.path().join("master_absent_identity.pub");
+        fs::write(
+            &absent,
+            format!(
+                "# absent stub\n{}\n",
+                age::plugin::Identity::default_for_plugin("absent")
+            ),
+        )
+        .unwrap();
+        let skipped = DecryptSession::from_identities(&[absent]).unwrap();
+        skipped
+            .prefetch_with_path(&secrets[1..2], Some(&search))
+            .unwrap();
+        assert!(skipped.failed.borrow().is_empty());
         for secret in &secrets[3..] {
             assert!(session.plaintexts.borrow().contains_key(secret));
             assert!(decrypt_with_session_allowing_empty(secret, &session)

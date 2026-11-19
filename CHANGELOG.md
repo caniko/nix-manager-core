@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-11-19
+
+### Fixed
+
+- `age::DecryptSession::prefetch` reports the plugin's `error` replies instead
+  of dropping them. When a plugin raised an error on a file's own stanza, the
+  per-file `rage` fallback for that file skips that identity, so it no longer
+  asks for one more hardware touch per file on a token that just failed; with
+  no other identity left, `decrypt_with_session` fails with the plugin's error.
+
 ## [0.4.8] - 2026-11-19
 
 ### Added
