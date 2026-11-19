@@ -27,4 +27,8 @@ version = 2
 ignore = [
   { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2: compile-time only, via age's i18n-embed-fl" },
   { id = "RUSTSEC-2026-0374", reason = "basic-toml: compile-time only, via age's i18n-config" },
+  # Unmaintained, not vulnerable. A direct dependency: forge.rs parses Forgejo
+  # token timestamps and does date math with it. Drop once forge.rs no longer
+  # uses chrono.
+  { id = "RUSTSEC-2026-0543", reason = "chrono: unmaintained, no known vulnerability; replace in forge.rs" },
 ]
