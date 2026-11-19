@@ -36,13 +36,13 @@ use crate::ui;
 /// [`DecryptSession::prefetch`] decrypts many files through one plugin
 /// session per identity. `age-plugin-fido2-hmac` derives its X25519 key once
 /// per plugin process, so a sync run needs one hardware touch instead of one
-/// per secret. A file the prefetch skipped falls back to `rage`; one that every
-/// identity's plugin saw without returning its key fails with the plugin's
-/// error instead.
+/// per secret. A file the prefetch did not decrypt falls back to `rage`, unless
+/// a plugin raised an error on that file's own stanza: it then fails with that
+/// error instead of asking for another touch.
 pub struct DecryptSession {
     identities: Vec<PathBuf>,
     plaintexts: RefCell<HashMap<PathBuf, String>>,
-    /// Files every identity's plugin batch saw without a key, and why.
+    /// Files a plugin raised an error on, and the error.
     failed: RefCell<HashMap<PathBuf, String>>,
 }
 
@@ -75,8 +75,8 @@ impl DecryptSession {
     ///
     /// Identities are tried in order, one at a time, so separate FIDO2 stubs
     /// never share a plugin invocation. A failed session moves on to the next
-    /// identity. Plugin `error` replies are reported. What stays undecrypted is
-    /// retried per file later only if some identity skipped the batch.
+    /// identity. Plugin `error` replies are reported; a file one names is not
+    /// retried per file later, anything else is.
     pub fn prefetch(&self, secrets: &[PathBuf]) -> Result<()> {
         self.prefetch_with_path(secrets, std::env::var_os("PATH").as_deref())
     }
@@ -92,16 +92,11 @@ impl DecryptSession {
             .collect();
         pending.sort();
         pending.dedup();
-        // Per-file `rage` can only help where an identity skipped the batch
-        // (a native key, or a plugin that is not on PATH).
-        let mut skipped = false;
-        let mut reasons: Vec<String> = Vec::new();
         for identity in &self.identities {
             if pending.is_empty() {
                 break;
             }
             let Some(plugin) = plugin_identity(identity)? else {
-                skipped = true;
                 continue;
             };
             ui::step(format!(
@@ -112,20 +107,25 @@ impl DecryptSession {
             let name = format!("age-plugin-{}", plugin.plugin());
             let Some(binary) = find_on_path(&name, path) else {
                 ui::warn(format!("{name} is not on PATH"));
-                skipped = true;
                 continue;
             };
             let (values, errors) = match decrypt_batch(&binary, &plugin.to_string(), &pending) {
                 Ok(batch) => batch,
                 Err(e) => {
                     ui::warn(format!("{}: {e:#}", identity.display()));
-                    reasons.push(format!("{}: {e:#}", identity.display()));
                     continue;
                 }
             };
-            for error in errors {
-                ui::warn(format!("{}: {error}", identity.display()));
-                reasons.push(format!("{}: {error}", identity.display()));
+            // An error the plugin raised on a file's own stanza is definitive
+            // for that file: a per-file retry would ask for another touch on a
+            // token that just failed. Anything else keeps the fallback.
+            let mut failed = self.failed.borrow_mut();
+            for (index, error) in errors {
+                let message = format!("{}: {error}", identity.display());
+                ui::warn(&message);
+                if let Some(secret) = index.and_then(|i| pending.get(i)) {
+                    failed.insert((*secret).clone(), message);
+                }
             }
             let mut plaintexts = self.plaintexts.borrow_mut();
             for (secret, value) in pending.iter().zip(values) {
@@ -134,20 +134,6 @@ impl DecryptSession {
                 }
             }
             pending.retain(|secret| !plaintexts.contains_key(*secret));
-        }
-        if !skipped {
-            // Every identity's plugin saw these files and returned no key; a
-            // retry per file would ask for one more touch each and, on a token
-            // that just failed, fail again.
-            let reason = if reasons.is_empty() {
-                "no identity's plugin returned a file key".to_owned()
-            } else {
-                reasons.join("; ")
-            };
-            let mut failed = self.failed.borrow_mut();
-            for secret in pending {
-                failed.insert(secret.clone(), reason.clone());
-            }
         }
         Ok(())
     }
@@ -208,13 +194,17 @@ fn plugin_identity(path: &Path) -> Result<Option<age::plugin::Identity>> {
 
 /// Unwrap the file keys of `secrets` in one `identity-v1` plugin session and
 /// decrypt each payload. `None` marks a file the plugin did not unwrap.
+/// Plugin `error` replies, each with the index of the file it names, if any.
+type BatchErrors = Vec<(Option<usize>, String)>;
+
 /// One plugin session for `secrets`: each file's plaintext, where the plugin
-/// returned its key, and the plugin's `error` replies.
+/// returned its key, and the plugin's `error` replies with the index of the
+/// file they name, if any.
 fn decrypt_batch(
     binary: &Path,
     identity: &str,
     secrets: &[&PathBuf],
-) -> Result<(Vec<Option<String>>, Vec<String>)> {
+) -> Result<(Vec<Option<String>>, BatchErrors)> {
     let ciphertexts = secrets
         .iter()
         .map(|secret| {
@@ -271,8 +261,16 @@ fn decrypt_batch(
                 }
             }
             "error" => {
+                // `stanza FILE STANZA` names the file; `internal` does not.
+                let file = match command.args.as_slice() {
+                    [kind, file, ..] if kind == "stanza" => file.parse::<usize>().ok(),
+                    _ => None,
+                };
                 let body = String::from_utf8_lossy(&command.body);
-                errors.push(format!("({}) {}", command.args.join(" "), body.trim()));
+                errors.push((
+                    file,
+                    format!("({}) {}", command.args.join(" "), body.trim()),
+                ));
                 reply.ok(None)
             }
             _ => reply.fail(),
