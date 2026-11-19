@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-11-19
+
 ### Fixed
 
 - `age::DecryptSession::prefetch` reports the plugin's `error` replies instead
