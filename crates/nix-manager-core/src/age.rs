@@ -36,14 +36,14 @@ use crate::ui;
 /// [`DecryptSession::prefetch`] decrypts many files through one plugin
 /// session per identity. `age-plugin-fido2-hmac` derives its X25519 key once
 /// per plugin process, so a sync run needs one hardware touch instead of one
-/// per secret. A file the prefetch did not decrypt falls back to `rage`, unless
-/// a plugin raised an error on that file's own stanza: it then fails with that
-/// error instead of asking for another touch.
+/// per secret. A file the prefetch did not decrypt falls back to `rage` with
+/// every identity whose plugin did not raise an error on that file's stanza; if
+/// none is left, it fails with the plugin's error instead of another touch.
 pub struct DecryptSession {
     identities: Vec<PathBuf>,
     plaintexts: RefCell<HashMap<PathBuf, String>>,
-    /// Files a plugin raised an error on, and the error.
-    failed: RefCell<HashMap<PathBuf, String>>,
+    /// Per file, the identities whose plugin raised an error on its stanza.
+    failed: RefCell<HashMap<PathBuf, Vec<(PathBuf, String)>>>,
 }
 
 impl fmt::Debug for DecryptSession {
@@ -75,8 +75,8 @@ impl DecryptSession {
     ///
     /// Identities are tried in order, one at a time, so separate FIDO2 stubs
     /// never share a plugin invocation. A failed session moves on to the next
-    /// identity. Plugin `error` replies are reported; a file one names is not
-    /// retried per file later, anything else is.
+    /// identity. Plugin `error` replies are reported; a later per-file retry of a
+    /// file one names skips that identity.
     pub fn prefetch(&self, secrets: &[PathBuf]) -> Result<()> {
         self.prefetch_with_path(secrets, std::env::var_os("PATH").as_deref())
     }
@@ -116,15 +116,19 @@ impl DecryptSession {
                     continue;
                 }
             };
-            // An error the plugin raised on a file's own stanza is definitive
-            // for that file: a per-file retry would ask for another touch on a
-            // token that just failed. Anything else keeps the fallback.
+            // An error the plugin raised on a file's own stanza rules out this
+            // identity for that file: a per-file retry with it would ask for
+            // another touch on a token that just failed. Other identities and
+            // other errors keep the fallback.
             let mut failed = self.failed.borrow_mut();
             for (index, error) in errors {
                 let message = format!("{}: {error}", identity.display());
                 ui::warn(&message);
                 if let Some(secret) = index.and_then(|i| pending.get(i)) {
-                    failed.insert((*secret).clone(), message);
+                    failed
+                        .entry((*secret).clone())
+                        .or_default()
+                        .push((identity.clone(), message));
                 }
             }
             let mut plaintexts = self.plaintexts.borrow_mut();
@@ -160,13 +164,31 @@ fn decrypt_with_session_inner(
     if let Some(value) = session.plaintexts.borrow().get(secret) {
         return check_empty(value.clone(), allow_empty);
     }
-    if let Some(reason) = session.failed.borrow().get(secret) {
+    let errors = session
+        .failed
+        .borrow()
+        .get(secret)
+        .cloned()
+        .unwrap_or_default();
+    if errors.is_empty() {
+        return decrypt_with_identities_inner(secret, session.identities(), allow_empty);
+    }
+    // Retry only with identities whose plugin did not reject this file.
+    let rest: Vec<PathBuf> = session
+        .identities()
+        .iter()
+        .filter(|identity| !errors.iter().any(|(failed, _)| failed == *identity))
+        .cloned()
+        .collect();
+    if rest.is_empty() {
+        let reasons: Vec<&str> = errors.iter().map(|(_, message)| message.as_str()).collect();
         bail!(
-            "{} was not decrypted in this run's batch ({reason}); not retried per file",
-            secret.display()
+            "{} was not decrypted in this run's batch ({}); not retried per file",
+            secret.display(),
+            reasons.join("; ")
         );
     }
-    decrypt_with_identities_inner(secret, session.identities(), allow_empty)
+    decrypt_with_identities_inner(secret, &rest, allow_empty)
 }
 
 /// The first `binary` file in the `PATH`-style list `path`. The plugin
