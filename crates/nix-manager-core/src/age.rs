@@ -36,10 +36,14 @@ use crate::ui;
 /// [`DecryptSession::prefetch`] decrypts many files through one plugin
 /// session per identity. `age-plugin-fido2-hmac` derives its X25519 key once
 /// per plugin process, so a sync run needs one hardware touch instead of one
-/// per secret. Files the prefetch could not decrypt fall back to `rage`.
+/// per secret. A file the prefetch skipped falls back to `rage`; one that every
+/// identity's plugin saw without returning its key fails with the plugin's
+/// error instead.
 pub struct DecryptSession {
     identities: Vec<PathBuf>,
     plaintexts: RefCell<HashMap<PathBuf, String>>,
+    /// Files every identity's plugin batch saw without a key, and why.
+    failed: RefCell<HashMap<PathBuf, String>>,
 }
 
 impl fmt::Debug for DecryptSession {
@@ -59,6 +63,7 @@ impl DecryptSession {
         Ok(Self {
             identities: identities.to_vec(),
             plaintexts: RefCell::default(),
+            failed: RefCell::default(),
         })
     }
 
@@ -70,7 +75,8 @@ impl DecryptSession {
     ///
     /// Identities are tried in order, one at a time, so separate FIDO2 stubs
     /// never share a plugin invocation. A failed session moves on to the next
-    /// identity; whatever stays undecrypted is retried per file later.
+    /// identity. Plugin `error` replies are reported. What stays undecrypted is
+    /// retried per file later only if some identity skipped the batch.
     pub fn prefetch(&self, secrets: &[PathBuf]) -> Result<()> {
         self.prefetch_with_path(secrets, std::env::var_os("PATH").as_deref())
     }
@@ -86,11 +92,16 @@ impl DecryptSession {
             .collect();
         pending.sort();
         pending.dedup();
+        // Per-file `rage` can only help where an identity skipped the batch
+        // (a native key, or a plugin that is not on PATH).
+        let mut skipped = false;
+        let mut reasons: Vec<String> = Vec::new();
         for identity in &self.identities {
             if pending.is_empty() {
                 break;
             }
             let Some(plugin) = plugin_identity(identity)? else {
+                skipped = true;
                 continue;
             };
             ui::step(format!(
@@ -101,15 +112,21 @@ impl DecryptSession {
             let name = format!("age-plugin-{}", plugin.plugin());
             let Some(binary) = find_on_path(&name, path) else {
                 ui::warn(format!("{name} is not on PATH"));
+                skipped = true;
                 continue;
             };
-            let values = match decrypt_batch(&binary, &plugin.to_string(), &pending) {
-                Ok(values) => values,
+            let (values, errors) = match decrypt_batch(&binary, &plugin.to_string(), &pending) {
+                Ok(batch) => batch,
                 Err(e) => {
                     ui::warn(format!("{}: {e:#}", identity.display()));
+                    reasons.push(format!("{}: {e:#}", identity.display()));
                     continue;
                 }
             };
+            for error in errors {
+                ui::warn(format!("{}: {error}", identity.display()));
+                reasons.push(format!("{}: {error}", identity.display()));
+            }
             let mut plaintexts = self.plaintexts.borrow_mut();
             for (secret, value) in pending.iter().zip(values) {
                 if let Some(value) = value {
@@ -117,6 +134,20 @@ impl DecryptSession {
                 }
             }
             pending.retain(|secret| !plaintexts.contains_key(*secret));
+        }
+        if !skipped {
+            // Every identity's plugin saw these files and returned no key; a
+            // retry per file would ask for one more touch each and, on a token
+            // that just failed, fail again.
+            let reason = if reasons.is_empty() {
+                "no identity's plugin returned a file key".to_owned()
+            } else {
+                reasons.join("; ")
+            };
+            let mut failed = self.failed.borrow_mut();
+            for secret in pending {
+                failed.insert(secret.clone(), reason.clone());
+            }
         }
         Ok(())
     }
@@ -142,6 +173,12 @@ fn decrypt_with_session_inner(
 ) -> Result<String> {
     if let Some(value) = session.plaintexts.borrow().get(secret) {
         return check_empty(value.clone(), allow_empty);
+    }
+    if let Some(reason) = session.failed.borrow().get(secret) {
+        bail!(
+            "{} was not decrypted in this run's batch ({reason}); not retried per file",
+            secret.display()
+        );
     }
     decrypt_with_identities_inner(secret, session.identities(), allow_empty)
 }
@@ -171,11 +208,13 @@ fn plugin_identity(path: &Path) -> Result<Option<age::plugin::Identity>> {
 
 /// Unwrap the file keys of `secrets` in one `identity-v1` plugin session and
 /// decrypt each payload. `None` marks a file the plugin did not unwrap.
+/// One plugin session for `secrets`: each file's plaintext, where the plugin
+/// returned its key, and the plugin's `error` replies.
 fn decrypt_batch(
     binary: &Path,
     identity: &str,
     secrets: &[&PathBuf],
-) -> Result<Vec<Option<String>>> {
+) -> Result<(Vec<Option<String>>, Vec<String>)> {
     let ciphertexts = secrets
         .iter()
         .map(|secret| {
@@ -184,6 +223,7 @@ fn decrypt_batch(
         .collect::<Result<Vec<_>>>()?;
     let stanzas: Vec<Vec<Stanza>> = ciphertexts.iter().map(|c| header_stanzas(c)).collect();
     let mut file_keys: Vec<Option<FileKey>> = secrets.iter().map(|_| None).collect();
+    let mut errors = Vec::new();
     let mut conn = Connection::open(binary, IDENTITY_V1)
         .with_context(|| format!("starting {}", binary.display()))?;
     conn.unidir_send(|mut phase| {
@@ -230,18 +270,23 @@ fn decrypt_batch(
                     _ => reply.fail(),
                 }
             }
-            "error" => reply.ok(None),
+            "error" => {
+                let body = String::from_utf8_lossy(&command.body);
+                errors.push(format!("({}) {}", command.args.join(" "), body.trim()));
+                reply.ok(None)
+            }
             _ => reply.fail(),
         },
     )?;
 
-    Ok(ciphertexts
+    let values = ciphertexts
         .iter()
         .zip(file_keys)
         .map(|(ciphertext, file_key)| {
             file_key.and_then(|key| decrypt_payload(ciphertext, key).ok())
         })
-        .collect())
+        .collect();
+    Ok((values, errors))
 }
 
 /// The recipient stanzas in an age header, captured by an identity that
@@ -864,6 +909,7 @@ mod tests {
                 "#!/bin/sh\necho run >> '{count}'\n\
                  while IFS= read -r line; do [ \"$line\" = '-> done' ] && break; done\nread -r _\n\
                  printf -- '-> file-key 0\\n{k0}\\n'; read -r _; read -r _\n\
+                 printf -- '-> error stanza 1 0\\nZmFpbGVkIHRvIGdldCBhc3NlcnRpb246IGludGVybmFsIGVycm9y\\n'; read -r _; read -r _\n\
                  printf -- '-> file-key 2\\n{k2}\\n'; read -r _; read -r _\n\
                  printf -- '-> file-key 3\\n{k3}\\n'; read -r _; read -r _\n\
                  printf -- '-> file-key 4\\n{k4}\\n'; read -r _; read -r _\n\
@@ -903,6 +949,31 @@ mod tests {
             "charlie"
         );
         assert!(!session.plaintexts.borrow().contains_key(&secrets[1]));
+        // The plugin's error is the reason, and the file is not retried with
+        // another touch.
+        let error = decrypt_with_session(&secrets[1], &session)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("(stanza 1 0) failed to get assertion: internal error")
+                && error.contains("not retried per file"),
+            "{error}"
+        );
+        // A plugin that never ran leaves the per-file fallback in place.
+        let absent = dir.path().join("master_absent_identity.pub");
+        fs::write(
+            &absent,
+            format!(
+                "# absent stub\n{}\n",
+                age::plugin::Identity::default_for_plugin("absent")
+            ),
+        )
+        .unwrap();
+        let skipped = DecryptSession::from_identities(&[absent]).unwrap();
+        skipped
+            .prefetch_with_path(&secrets[1..2], Some(&search))
+            .unwrap();
+        assert!(skipped.failed.borrow().is_empty());
         for secret in &secrets[3..] {
             assert!(session.plaintexts.borrow().contains_key(secret));
             assert!(decrypt_with_session_allowing_empty(secret, &session)

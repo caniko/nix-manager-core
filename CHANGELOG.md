@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `age::DecryptSession::prefetch` reports the plugin's `error` replies instead
+  of dropping them. A file that every identity's plugin batch saw without
+  returning its key now fails `decrypt_with_session` with that error rather
+  than being decrypted again one file at a time, which asked for one more
+  hardware touch per file on a token that had just failed. Files a batch
+  skipped (a native key, a plugin not on `PATH`) still fall back to `rage`.
+
 ## [0.4.8] - 2026-11-19
 
 ### Added
